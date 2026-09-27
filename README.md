@@ -61,7 +61,8 @@ changes one import: [DeepEval and RAGAS](docs/frameworks.md).
 
 `assay connect` attaches Assay to an existing app (through its database, a few lines of code, or a
 proposed test per model call), with any model provider. `assay demo && assay serve` shows it on
-synthetic data.
+synthetic data, document extraction metrics included: seven weeks in which a release breaks totals,
+wrong values escape through auto-approval, and one customer's corrections stop reaching output.
 
 **Docs:** [all documentation](docs/README.md) · [testing](docs/testing.md) · [CI](docs/ci.md) ·
 [agents](docs/agents.md) · [setup](docs/setup.md) · [Python SDK](sdk/python/README.md)
