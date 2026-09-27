@@ -29,7 +29,9 @@ REGRESSIONS
 
 - **Tests are pytest tests.** Each case is compared with its own last passing run: checks, tool
   calls in order, cost and context. The GitHub Action fails the PR and comments the diff.
-- **Real, or noise.** Repeats, flaky detection and noise floors. A result that couldn't be judged
+- **Real, or noise.** Run each case several times and Assay tells chance (8/8 → 7/8, passes)
+  from too few attempts to tell (inconclusive) from a regression (8/8 → 0/8, fails), corrected for
+  the number of checks: [repeated attempts](docs/repeats.md). A result that couldn't be judged
   is kept apart, never scored as 0. A PR can't loosen the checks that judge it.
 - **Agents and workflows.** Trajectories, path and claim contracts, plan adherence, multi-turn
   conversations, and simulated users.

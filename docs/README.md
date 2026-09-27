@@ -6,6 +6,7 @@
 |---|---|
 | [Testing your AI app](testing.md) | Your AI tests are pytest tests: `pytest --assay`, the assay_case fixture, assertions, baselines, flakiness |
 | [Behavior diff](diff.md) | `assay diff`: what changed between two versions, with the flow before and after and a severity |
+| [Repeated attempts](repeats.md) | Chance, too few attempts to tell, or a regression: two gates, corrected for the number of checks, and what they can't tell you |
 | [CI and pull requests](ci.md) | The GitHub Action, the PR comment, rerunning what failed, timeouts |
 | [Security](security.md) | What the checks catch in the agent, and what a pull request can and can't do to the evaluation |
 | [Agents](agents.md) | Evaluating the trajectory: lifecycle, plan adherence, the LLM judge, conversations, MCP, behavior |
