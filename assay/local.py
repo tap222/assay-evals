@@ -116,6 +116,7 @@ suite = 1.25             # the whole run's totals: every query a little bigger a
 # repeat = 5
 # score_range = [1, 5]
 # threshold = 3
+# group_by = "tags"          # also ranked within each tag ("input": answers to the same input)
 
 # Dollars per million tokens (input, output[, cached]): recorded model calls get their cost.
 # [prices]
@@ -266,6 +267,10 @@ def _calibrate_config(c: dict) -> dict:
         raise SetupError(f"{CONFIG}, [calibrate]: repeat, concurrency and min_drop are numbers.")
     if out["repeat"] < 1:
         raise SetupError(f"{CONFIG}, [calibrate] repeat: at least 1 (3 or more shows how much the judge swings).")
+    from assay.calibrate import GROUP_BY
+    if out["group_by"] not in GROUP_BY:
+        raise SetupError(f"{CONFIG}, [calibrate] group_by: one of {', '.join(GROUP_BY)} (what the judge is checked "
+                         "within: items of the same tags, or answers to the same input).")
     return out
 
 
@@ -1230,9 +1235,10 @@ def trust(engine, tenant: str, rows: list) -> Dict[str, dict]:
         cal = x.result["calibration"]
         age = (datetime.utcnow() - x.created_at).days
         cal_models = set(cal.get("models") or [])
+        groups = cal.get("groups") or {}
         state = "regressed" if not x.passed else "other_judge" if models and cal_models and models != cal_models \
-            else "stale" if age > STALE_DAYS else "ok"
-        out[f] = {"state": state, "age": age, "spearman": cal.get("spearman"), "n": cal.get("n"),
+            else "topic" if groups.get("topic") else "stale" if age > STALE_DAYS else "ok"
+        out[f] = {"state": state, "age": age, "spearman": cal.get("spearman"), "n": cal.get("n"), "groups": groups,
                   "models": sorted(cal_models), "now": sorted(models), "run_id": x.run_id, "same_family": fam}
     return out
 
@@ -1253,7 +1259,15 @@ def _trust_text(t: dict) -> str:
             "stale": f"{base}; over {STALE_DAYS} days old, and a provider can change a model under its name",
             "regressed": f"its last calibration regressed ({t['run_id']}): don't lean on these scores",
             "other_judge": f"calibrated for {', '.join(t['models'])}, but judged by {', '.join(t['now'])} this run: "
-                           f"not calibrated for that judge"}[t["state"]]
+                           f"not calibrated for that judge",
+            "topic": _topic_text(base, t.get("groups") or {})}[t["state"]]
+
+
+def _topic_text(base: str, g: dict) -> str:
+    what = "tag" if g.get("by") == "tags" else "input"
+    within = g.get("within")
+    return (f"{base}, but it tracks the {'topic' if what == 'tag' else 'input'}, not the answer: "
+            f"Spearman {within:.2f} among answers of the same {what}" if within is not None else base)
 
 
 def trust_lines(result: dict) -> List[str]:
@@ -1261,7 +1275,7 @@ def trust_lines(result: dict) -> List[str]:
     if not t:
         return []
     w = max(len(_label(f)) for f in t)
-    tone = {"ok": "dim", "none": "yellow", "stale": "yellow", "regressed": "red", "other_judge": "yellow"}
+    tone = {"ok": "dim", "none": "yellow", "stale": "yellow", "regressed": "red", "other_judge": "yellow", "topic": "yellow"}
     return [_paint("Judges", "bold")] + [_paint(f"  {_label(f):<{w}}  {trust_text(f, x)}",
                                                 "yellow" if x.get("same_family") and x["state"] == "ok" else tone[x["state"]])
                                          for f, x in t.items()] + [""]
@@ -2517,7 +2531,7 @@ def golden_add(root: Path, case: str, score: float, by: Optional[str], tags: Lis
     return 0
 
 
-def golden_split(root: Path, train: float = 0.2, dev: float = 0.4, seed: int = 0) -> int:
+def golden_split(root: Path, train: float = 0.2, dev: float = 0.4, seed: int = 0, by: Optional[str] = None) -> int:
     from assay import calibrate
     ccfg = _calib_cfg(root)
     path = root / ccfg["golden"]
@@ -2525,10 +2539,13 @@ def golden_split(root: Path, train: float = 0.2, dev: float = 0.4, seed: int = 0
     if not 0 < train < 1 or not 0 < dev < 1 or train + dev >= 1:
         print("--train and --dev are shares that leave some for test, e.g. 0.2 and 0.4.", file=sys.stderr)
         return 2
-    sizes = calibrate.assign_splits(items, train, dev, seed)
+    sizes = calibrate.assign_splits(items, train, dev, seed, by_group=by)
     calibrate.save_golden(path, items)
+    whole = f" Whole {'tags' if by == 'tags' else 'inputs'} go to one split: dev and test are ones train never saw." \
+        if by else ""
     print(f"{path.name}: " + ", ".join(f"{k} {sizes.get(k, 0)}" for k in calibrate.SPLITS) + ". A judge takes its "
-          f"examples from train (assay_sdk.golden_examples); `assay calibrate` reports on dev, `--final` on test.")
+          f"examples from train (assay_sdk.golden_examples); `assay calibrate` reports on dev, `--final` on test."
+          + whole)
     return 0
 
 

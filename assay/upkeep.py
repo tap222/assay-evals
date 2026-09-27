@@ -59,9 +59,11 @@ def audit(engine, tenant: str, days: float, golden_items: Dict[str, int]) -> dic
             issues.append("never calibrated against people (assay calibrate)")
         elif x.get("age") is not None and x["age"] > WEEK:
             issues.append(f"not calibrated in {x['age']} days: a judge needs upkeep every week or so")
-        if x["state"] in ("regressed", "other_judge"):
+        if x["state"] in ("regressed", "other_judge", "topic"):
             issues.append("its trust label doesn't hold: " + {"regressed": "the last calibration regressed",
-                                                                  "other_judge": "calibrated for another judge"}[x["state"]])
+                                                                  "other_judge": "calibrated for another judge",
+                                                                  "topic": "it tells topics apart, not good answers "
+                                                                           "from bad ones within a topic"}[x["state"]])
         if len(failed) >= 3 and about_format / len(failed) >= 0.5:
             issues.append(f"{about_format} of its {len(failed)} failures are about length or format: a code check "
                           "(a word limit, a pattern, valid JSON) would do that without the upkeep")

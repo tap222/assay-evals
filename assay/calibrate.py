@@ -69,7 +69,10 @@ BOOTSTRAP, SEED = 1000, 0
 MIN_TAG_ITEMS = 8  # fewer can't say whether a tag got worse
 DEFAULTS = {"golden": "golden.jsonl", "judge": None, "repeat": 5, "score_range": [1, 5], "label_range": None,
             "threshold": None, "concurrency": 8, "min_drop": 0.05, "field": None, "second_judge": None,
-            "split": None}
+            "split": None, "group_by": "tags"}
+GROUP_BY = ("tags", "input", "none")
+MIN_GROUP_ITEMS, MIN_GROUPS = 3, 3  # a group check needs this many groups of this many judged items
+TOPIC = 0.3  # within-group Spearman below this, where groups alone reach this, tracks the group
 SPLITS = ("train", "dev", "test")
 EXPECTS = ("same", "lower", "higher")
 
@@ -139,10 +142,17 @@ def save_golden(path: Path, items: List[dict]) -> None:
     path.write_text("\n".join(out) + "\n")
 
 
-def assign_splits(items: List[dict], train: float = 0.2, dev: float = 0.4, seed: int = 0) -> Dict[str, int]:
+def assign_splits(items: List[dict], train: float = 0.2, dev: float = 0.4, seed: int = 0,
+                  by_group: Optional[str] = None) -> Dict[str, int]:
     """Give every item without a split one: train, dev or test, stratified by label so each split
-    spans poor to great. Items that have one keep it. {split: items}."""
+    spans poor to great. Items that have one keep it. {split: items}.
+
+    With `by_group` ("tags" or "input"), whole groups go to one split, so a judge that learned from
+    train is measured on topics (or inputs) it hasn't seen. An unsplit item joins the split most of
+    its group already has."""
     rnd = random.Random(seed)
+    if by_group:
+        return _assign_groups(items, train, dev, rnd, by_group)
     by: Dict[int, List[dict]] = defaultdict(list)
     for x in items:
         if not x.get("split"):
@@ -153,6 +163,38 @@ def assign_splits(items: List[dict], train: float = 0.2, dev: float = 0.4, seed:
         a, b = round(n * train), round(n * (train + dev))
         for i, x in enumerate(xs):
             x["split"] = "train" if i < a else "dev" if i < b else "test"
+    return dict(Counter(x.get("split") or "none" for x in items))
+
+
+def group_of(x: dict, by: str) -> Optional[str]:
+    """The group an item belongs to: its tags together, or its input. None when it has none."""
+    if by == "tags":
+        return "+".join(sorted(x.get("tags") or [])) or None
+    if by == "input":
+        return _norm_text(x.get("input")) or None
+    return None
+
+
+def _assign_groups(items: List[dict], train: float, dev: float, rnd: random.Random, by_group: str) -> Dict[str, int]:
+    groups: Dict[str, List[dict]] = defaultdict(list)
+    for x in items:
+        groups[group_of(x, by_group) or f"item:{x['id']}"].append(x)
+    fresh = []
+    for g, xs in sorted(groups.items()):
+        had = Counter(x["split"] for x in xs if x.get("split"))
+        if had:
+            for x in xs:
+                x["split"] = x.get("split") or had.most_common(1)[0][0]
+        else:
+            fresh.append(xs)
+    rnd.shuffle(fresh)
+    total, done = sum(len(xs) for xs in fresh), 0
+    for xs in fresh:  # by the share of items placed so far, so a big group doesn't skew the split
+        at = done / total if total else 0
+        split = "train" if at < train else "dev" if at < train + dev else "test"
+        for x in xs:
+            x["split"] = split
+        done += len(xs)
     return dict(Counter(x.get("split") or "none" for x in items))
 
 
@@ -257,6 +299,54 @@ def bootstrap_rho(labels: List[float], judged: List[float]) -> Optional[Tuple[fl
         idx = [rnd.randrange(n) for _ in range(n)]
         out.append(spearman([labels[i] for i in idx], [judged[i] for i in idx]))
     return _interval(out)
+
+
+def group_check(judged: List[dict], by: str) -> Optional[dict]:
+    """Does the judge rank answers, or recognize their group? A golden set whose tags differ in
+    typical quality (refunds rated low, greetings high) gives a judge that only knows the topic a
+    healthy overall Spearman. Ranked within each group it's near zero. None without enough groups.
+
+      within    Spearman over the items centred on their group's mean (label and judge alike):
+                how well it ranks answers of the same group
+      baseline  Spearman of the label against the other items' mean label in its group: what
+                knowing the group alone reaches
+      topic     groups alone reach TOPIC or more, the judge ranks within groups below TOPIC, and
+                its overall number is at least 0.2 above that: it tracks the group, not the answer
+    """
+    if by not in ("tags", "input"):
+        return None
+    groups: Dict[str, List[dict]] = defaultdict(list)
+    for r in judged:
+        g = group_of(r, by)
+        if g:
+            groups[g].append(r)
+    groups = {g: rs for g, rs in groups.items() if len(rs) >= MIN_GROUP_ITEMS}
+    if len(groups) < MIN_GROUPS:
+        return None
+    rows = [r for rs in groups.values() for r in rs]
+    base = []
+    for rs in groups.values():
+        total = sum(r["label"] for r in rs)
+        base += [(total - r["label"]) / (len(rs) - 1) for r in rs]
+
+    def within(parts: List[List[dict]]) -> Optional[float]:
+        cl, cj = [], []
+        for rs in parts:
+            ml, mj = mean(r["label"] for r in rs), mean(r["judged"] for r in rs)
+            cl += [r["label"] - ml for r in rs]
+            cj += [r["judged"] - mj for r in rs]
+        if len(set(cl)) > 1 and len(set(cj)) == 1:
+            return 0.0  # the same score for every answer of a group: it ranks nothing within one
+        return spearman(cl, cj)
+    rho = spearman([r["label"] for r in rows], [r["judged"] for r in rows])
+    rho_base = spearman([r["label"] for r in rows], base)
+    w = within(list(groups.values()))
+    rnd, names = random.Random(SEED), sorted(groups)
+    boot = [within([groups[rnd.choice(names)] for _ in names]) for _ in range(BOOTSTRAP)]  # groups are the unit
+    topic = bool(rho is not None and rho_base is not None and w is not None
+                 and rho_base >= TOPIC and w < TOPIC and rho - w >= 0.2)
+    return {"by": by, "groups": len(groups), "items": len(rows), "spearman": rho, "baseline": rho_base,
+            "within": w, "within_interval": _interval(boot), "topic": topic}
 
 
 def paired_drop(labels: List[float], before: List[float], now: List[float]) -> Optional[Tuple[float, float]]:
@@ -506,6 +596,7 @@ def analyze(items: List[dict], results: Dict[str, list], cfg: dict) -> dict:
         "variants": variants, "models": models, "golden_digest": digest(items),
         "catch": _catch(judged, _to_labels(threshold, score_range, label_range)),
         "probes": probes(judged, models, span),
+        "groups": group_check(judged, cfg.get("group_by") or "tags"),
     }
 
 
@@ -668,6 +759,18 @@ def text(run_id: str, spec: str, a: dict, cfg: dict, cmp: Optional[dict], baseli
         out.append(paint(f"             e.g. {a['first_error'][:200]}", "dim"))
     if a["tags"]:
         out.append("By tag       " + "   ".join(f"{t} {_f(v['spearman'])} (n={v['n']})" for t, v in a["tags"].items()))
+    g = a.get("groups")
+    if g:
+        what = "tag" if g["by"] == "tags" else "input"
+        iv = g["within_interval"]
+        line = (f"Within {what + 's':<6}Spearman {_f(g['within'])}" + (f" (95% interval {_f(iv[0])}–{_f(iv[1])}, "
+                f"{g['groups']} {what}s resampled)" if iv else "") + f" · knowing only each {what}'s average "
+                f"label: {_f(g['baseline'])}")
+        out.append(line)
+        if g["topic"]:
+            out.append(paint(f"             it tracks the {'topic' if what == 'tag' else 'input'}, not the answer: "
+                             f"{_f(g['spearman'])} overall comes from telling {what}s apart. Among answers of the "
+                             f"same {what} it ranks at {_f(g['within'])}", "yellow"))
     vs = a.get("variants") or []
     if vs:
         ok = sum(v["ok"] for v in vs)

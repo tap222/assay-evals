@@ -138,6 +138,8 @@ def main(argv=None) -> int:
     gp.add_argument("--train", type=float, default=0.2)
     gp.add_argument("--dev", type=float, default=0.4)
     gp.add_argument("--seed", type=int, default=0)
+    gp.add_argument("--by", choices=["tags", "input"], help="Keep whole groups together: items with the same tags, or "
+                                                          "answers to the same input, all go to one split")
     gs.add_parser("stats", help="Labels per score, labelers, and how much people agree")
     gg = gs.add_parser("suggest", help="Recorded outputs to label next, spread over the judge's scores")
     gg.add_argument("-n", type=int, default=10)
@@ -318,7 +320,7 @@ def main(argv=None) -> int:
                         return 2
                     return claims.pull(root, url, args.source, args.days, local._calib_cfg(root)["golden"])
                 if args.golden_cmd == "split":
-                    return local.golden_split(root, args.train, args.dev, args.seed)
+                    return local.golden_split(root, args.train, args.dev, args.seed, args.by)
                 if args.golden_cmd == "stats":
                     return local.golden_stats(root)
                 return local.golden_suggest(root, args.n, args.field, args.vs, args.disagree)

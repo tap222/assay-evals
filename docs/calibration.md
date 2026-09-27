@@ -67,6 +67,15 @@ from assay_sdk import golden_examples
 SHOTS = golden_examples(split="train", k=8)   # [{"id", "input", "output", "label", "critique", "tags"}]
 ```
 
+`--by tags` (or `--by input`) keeps whole groups together: every item with the same tags, or every
+answer to the same input, goes to one split. Then dev and test are topics the judge's examples never
+came from, which is the question to ask when traffic can shift to kinds of request the golden set
+doesn't have yet. A new item of a group that's already split joins its group's split.
+
+```
+assay golden split --by tags
+```
+
 Calibration checks for a leak and fails on one: the judge asked for the split it's measured on
 (`golden_examples(split="dev")`), or an item's output from that split is in the judge's source
 file. An unsplit golden set is calibrated as a whole, with a reminder to split it.
@@ -86,6 +95,7 @@ label_range = [1, 5]                    # the labels' (default: the same)
 threshold = 3                           # pass at or above, for pass/fail flips
 min_drop = 0.05                         # smaller drops in rank correlation are reported, not failed
 field = "helpful"                       # the judge's check in your tests, for `golden suggest`
+group_by = "tags"                       # also ranked within each tag; "input": answers to the same input
 ```
 
 The judge is anything `evaluate()` takes: a function returning a score, a dict, JSON text, or an
@@ -128,6 +138,38 @@ Regressed.
   between pass and fail.
 - **Validity:** answers that weren't verdicts, and timeouts, are counted apart. They never
   become scores.
+- **Within tags:** the same ranking inside each tag (below).
+
+## Ranking answers, or recognizing the topic?
+
+A golden set's tags often differ in typical quality: refund answers rated low, greetings high. A
+judge that only recognizes the topic, and gives every refund answer a 2 and every greeting a 5,
+then gets a healthy Spearman overall, from telling tags apart. Among answers of the same tag it
+ranks nothing. Two more numbers tell the two judges apart:
+
+- **Within tags:** Spearman over the items centred on their tag's mean, the label and the judge's
+  score alike. It asks how well the judge ranks answers of the same kind. Its interval resamples
+  whole tags, since the tag is the unit here, not the item.
+- **Knowing only the tag:** Spearman of each label against the average label of the other items
+  in its tag. It's what the tags alone reach, with no judge at all.
+
+When the tags alone reach 0.3 or more, the judge ranks below 0.3 within them, and its overall
+number is at least 0.2 above that, calibration says so:
+
+```
+Ranking      Spearman 0.63 (95% interval 0.42–0.78)
+...
+Within tags  Spearman 0.00 (95% interval 0.00–0.00, 4 tags resampled) · knowing only each tag's average label: 0.34
+             it tracks the topic, not the answer: 0.63 overall comes from telling tags apart. Among answers of the same tag it ranks at 0.00
+```
+
+It isn't a failed calibration: nothing got worse. It's a trust problem, and every score from
+that judge carries it ([below](#every-judged-number-says-whether-it-can-be-trusted)). The fix is
+in the judge: its rubric or examples lean on the kind of request, not the quality of the answer.
+
+The check needs 3 tags or more with 3 judged items each. Items with several tags are grouped by
+the combination. `group_by = "input"` groups answers to the same input instead (several outputs
+labeled per question), and `group_by = "none"` turns it off.
 
 ## Bias: what the judge rewards besides quality
 
@@ -248,7 +290,9 @@ Judges
 
 `[calibrate] field` says which check the calibrated judge is. A calibration older than 30 days is
 marked stale, one that regressed says not to lean on the scores, and one made for another judge
-model than the one that scored this run says so. The PR comment has the same list.
+model than the one that scored this run says so, and one that tracks the topic rather than the
+answer says that (`calibrated today: Spearman 0.63 on 48 items, but it tracks the topic, not the
+answer: Spearman 0.00 among answers of the same tag`). The PR comment has the same list.
 
 `assay calibrate --baseline none` starts over, `--baseline ID` compares with a given one, and
 `--format json` gives it all as data.

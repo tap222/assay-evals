@@ -33,8 +33,8 @@ REGRESSIONS
   is kept apart, never scored as 0. A PR can't loosen the checks that judge it.
 - **Agents and workflows.** Trajectories, path and claim contracts, plan adherence, multi-turn
   conversations, and simulated users.
-- **Judges you can check.** Calibration against labels a person gave, bias probes, drift, and a
-  trust label on every judged score.
+- **Judges you can check.** Calibration against labels a person gave, bias probes, drift, whether
+  it ranks answers or only recognizes the topic, and a trust label on every judged score.
 - **What caused it.** The prompt, model, tools, input and settings that changed next to each
   regression, or "nothing on your side changed".
 - **From production back to tests.** Flagged traces and reviewed conversations become candidate

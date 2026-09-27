@@ -9,7 +9,7 @@
 | [CI and pull requests](ci.md) | The GitHub Action, the PR comment, rerunning what failed, timeouts |
 | [Security](security.md) | What the checks catch in the agent, and what a pull request can and can't do to the evaluation |
 | [Agents](agents.md) | Evaluating the trajectory: lifecycle, plan adherence, the LLM judge, conversations, MCP, behavior |
-| [Judge calibration](calibration.md) | A golden set a person scored, and whether the judge's scores track it: ranking, agreement, bias, consistency, per tag, on every change |
+| [Judge calibration](calibration.md) | A golden set a person scored, and whether the judge's scores track it: ranking, agreement, bias, consistency, per tag, whether it ranks answers or only recognizes the topic, on every change |
 | [Results you can trust](verdicts.md) | One verdict per check, and whether the judge was given the right data |
 | [Failure analysis](failures.md) | Where a wrong answer started, failure causes, path contracts |
 | [The report](report.md) | What the evaluation found: issues caught before users saw them, failure modes, fixes, the log |
