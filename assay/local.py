@@ -2190,7 +2190,7 @@ def test(root: Path, command: Optional[str], repeat: Optional[int], baseline: Op
               "assay.run(..., test=\"<case>\")?", file=sys.stderr)
         return 2
     why = f"the command timed out after {timeout:g}s" if TIMED_OUT in codes else None
-    code, text = finish(root, cfg, run_id, repeat, codes, baseline, junit, why)
+    code, text = finish(root, cfg, run_id, repeat, codes, baseline, junit, why, subset=failed)
     print("\n" + text, file=sys.stderr if code == 2 else sys.stdout)
     if send is not None and code != 2:
         print()
@@ -2200,10 +2200,12 @@ def test(root: Path, command: Optional[str], repeat: Optional[int], baseline: Op
 
 
 def finish(root: Path, cfg: dict, run_id: str, repeat: int, codes: List[int], baseline: Optional[str],
-           junit: Optional[str] = None, abandoned_why: Optional[str] = None) -> Tuple[int, str]:
+           junit: Optional[str] = None, abandoned_why: Optional[str] = None, subset: bool = False) -> Tuple[int, str]:
     """Load a recorded test run, check it, compare it with the baseline, and move the baseline on
     if it passed. (exit code, report): 0 passed, 1 failed, 2 nothing to check, 3 inconclusive.
-    Shared by `assay test` and `pytest --assay`."""
+    Shared by `assay test` and `pytest --assay`. `subset`: a rerun of what failed, so the cases it
+    leaves out weren't dropped."""
+    subset = subset or os.environ.get("ASSAY_RERUN") == "failed"
     home = ensure_home(root)
     events = home / "runs" / f"{run_id}.jsonl"
     engine = store.make_engine(f"sqlite:///{home / 'assay.db'}")
@@ -2269,6 +2271,22 @@ def finish(root: Path, cfg: dict, run_id: str, repeat: int, codes: List[int], ba
                                    **{c: run_id for c in promote(engine, run_id, keep=dropped(result))}}
     code = 1 if not passed else 3 if inconclusive else 0
     policy = cfg.get("policy")
+    # The suite as it last ran whole outside a pull request: on the default branch, that's what the cache
+    # hands a PR. A case in it that didn't run now was deleted, skipped or filtered out of the command, and
+    # when nobody reads the code, nobody else notices: the checks passed because the check that fails is gone.
+    ran_all = ran | {x["case_id"] for x in result["not_judged"]}
+    missing = sorted(set(state["suite"]) - ran_all) if state.get("suite") is not None and not subset else []
+    result["missing_cases"] = missing
+    if missing:
+        names = ", ".join(_short(c) for c in missing[:5]) + (f" and {len(missing) - 5} more" if len(missing) > 5 else "")
+        if policy and policy.get("trusted"):  # a PR: dropping a test loosens the checks like removing a contract
+            policy = {**policy, "changes": [*policy["changes"], {
+                "text": f"stops running {_n(len(missing), 'test case')} the base branch runs: {names}", "weakens": True}]}
+            policy["weakened"] = policy["weakened"] or not policy["accepted"]
+        else:
+            text += "\n" + _paint(f"{_n(len(missing), 'case')} that ran last time didn't run now: {names}.", "dim")
+    if not policy and not subset and abandoned_why is None:
+        state["suite"] = sorted(ran_all)
     if policy_lines(policy):
         text += "\n\n" + _paint("\n".join(policy_lines(policy)), "yellow" if policy["weakened"] else "dim")
     if policy and policy["weakened"]:  # loosening the gate needs a person to say so

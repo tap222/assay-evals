@@ -263,6 +263,8 @@ def _finish(session, s, exitstatus):
         s["report"] = "Nothing was recorded: no test took the assay_case fixture."
         return
     cfg = local.find_config(session.config.rootpath)
+    if session.config.getoption("assay_rerun", None) == "failed":  # a rerun leaves out what passed, not dropped
+        os.environ["ASSAY_RERUN"] = "failed"
     if session.config.getoption("assay_judge", False):
         cfg = {**cfg, "judge": {**cfg["judge"], "enabled": True}}
     code, text = local.finish(session.config.rootpath, cfg, s["run_id"], 1, [],

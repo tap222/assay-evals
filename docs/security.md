@@ -25,6 +25,14 @@ them, as with any test suite. What Assay adds:
   maintainer accepts the change with the `assay-policy-change` label (add `labeled` to the
   workflow's `pull_request` types, so labelling re-runs it). Outside the action, set
   `ASSAY_POLICY` to the trusted `assay.toml` and `ASSAY_POLICY_CHANGE=accepted` to accept.
+- **A PR can't drop the test its change breaks.** Deleting a failing test, skipping it, or
+  filtering it out of the command (`-k "not refund"`) leaves a suite that passes. So the default
+  branch's last run records which cases make up the suite, and on a pull request a case of it
+  that didn't run counts as loosening the checks: "stops running 1 test case the base branch
+  runs: test_cancel". It fails the run until the label accepts it, like removing a contract. A
+  rerun of what failed (`--assay-rerun failed`) leaves the rest out on purpose and isn't counted.
+  Outside a pull request it's one line, not a failure: running a subset is how you work on one
+  file.
 - **Who did what.** With SSO, people sign in with the company's identity provider and get a role
   from their groups; every change, sign-in and refusal is in the audit log
   ([API and authentication](api.md#single-sign-on-people-and-roles)).
@@ -39,6 +47,13 @@ them, as with any test suite. What Assay adds:
 - **The judge doesn't take personal data out.** Traces are redacted before they're sent to the
   model API (`[judge] redact`, `ASSAY_JUDGE_REDACT`), and the trace is marked as data, so
   instructions inside it don't steer the score.
+
+What it doesn't catch: a judge whose code the PR changed. A changed judge is noticed when its
+results say which judge they were: the model (read from a `Judge` answer) and `judge_prompt`
+("rubric@3"). A PR that edits a rubric and keeps its version is judged by the new rubric
+without a word. Version your rubrics, and review changes to judge code (a `CODEOWNERS` entry for
+`evals/` does it). The same goes for the workflow file itself: a PR can edit
+`.github/workflows/`, so make Assay's job a required check in branch protection.
 
 What it doesn't do: sandbox the tests. They run on the CI runner, like any test suite; run
 untrusted code only where a read-only token and no secrets are all there is to reach.

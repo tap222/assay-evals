@@ -40,6 +40,10 @@ skipped with a warning and the job doesn't fail over it. Outside the action,
 - **Rerun what failed:** `pytest --assay --assay-rerun failed` (or `assay test --failed`)
   runs only the tests that didn't pass last time: regressions, new failures, flaky tests,
   tests that need more attempts to tell, tests that couldn't be judged, known failures, and acknowledged ones. If none are left, that counts as a pass.
+- **Dropped tests fail the PR.** A test the default branch runs that a pull request no longer
+  runs (deleted, skipped, or filtered out of the command) counts as loosening the checks, until
+  the `assay-policy-change` label accepts it ([Security](security.md)). A rerun of what failed
+  doesn't count.
 - **Timeouts: a hung run doesn't hang CI.** An async evaluation that runs every case and then
   never returns shouldn't keep a job running until GitHub kills it at six hours.
   `timeout = 900` in `assay.toml` (or `assay test --timeout 900`, `pytest --assay

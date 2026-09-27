@@ -272,6 +272,48 @@ def test_a_pr_cant_loosen_the_checks_that_judge_it(project):
     assert accepted.returncode == 0 and "the change is accepted" in accepted.stdout  # a person said so
 
 
+THREE = '''
+def test_refund(assay_case):
+    assay_case.answer("ok")
+
+def test_greeting(assay_case):
+    assay_case.answer("ok")
+
+def test_cancel(assay_case):
+    assay_case.answer("ok")
+'''
+
+
+def test_a_pr_cant_drop_the_test_its_change_breaks(project):
+    (project / "tests").mkdir()
+    (project / "tests" / "test_suite.py").write_text(THREE)
+    (project / "assay.toml").write_text('[test]\ncommand = "pytest -q tests"\n')
+    (project / "base.toml").write_text('[test]\ncommand = "pytest -q tests"\n')
+    assert run(project).returncode == 0  # the default branch: its suite is these three
+    policy = {"ASSAY_POLICY": str(project / "base.toml")}
+
+    (project / "tests" / "test_suite.py").write_text(THREE.split("def test_cancel")[0])  # the PR deletes one
+    out = run(project, env=policy)
+    assert out.returncode == 1 and "✓ 2 passed" in out.stdout  # what's left passes; the run doesn't
+    assert "- stops running 1 test case the base branch runs: test_cancel" in out.stdout
+    assert "- loosens: stops running 1 test case the base branch runs: test\\_cancel" in \
+        (project / ".assay" / "summary.md").read_text()
+    out = run(project, "-k", "not greeting", env=policy)  # or filters it out of the command
+    assert out.returncode == 1 and "stops running 2 test cases the base branch runs: test_cancel, test_greeting" \
+        in out.stdout
+    accepted = run(project, env={**policy, "ASSAY_POLICY_CHANGE": "accepted"})  # a person removed it on purpose
+    assert accepted.returncode == 0 and "the change is accepted" in accepted.stdout
+
+    # Outside a PR it's said, not failed: running a subset is how you work on one file.
+    out = run(project, "-k", "refund")
+    assert out.returncode == 0 and "2 cases that ran last time didn't run now: test_cancel, test_greeting." in out.stdout
+    # And a rerun of what failed leaves the rest out on purpose.
+    (project / "tests" / "test_suite.py").write_text(THREE)
+    assert run(project).returncode == 0
+    out = run(project, "--assay-rerun", "failed", env=policy)
+    assert "stops running" not in out.stdout
+
+
 def test_what_counts_as_loosening():
     from assay import local
     base = local.load_config(Path("."), _toml(BASE_TOML + '\n[pii]\nallow = { send_receipt = ["email"] }\n'
