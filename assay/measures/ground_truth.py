@@ -79,12 +79,26 @@ class FieldAccuracy(_AwaitingTruth):
 
 
 class SupersededValues(_AwaitingTruth):
+    """From documents checked against the later ones that amend or replace them
+    (assay_sdk.documents.superseded_values): of the values a later document changed, the share
+    that output still holds, unmarked. Updated values and ones flagged as superseded are fine."""
     id = "superseded_value_rate"
     name = "Superseded values reaching output"
     question = "How often does a value that a later document replaced reach output unflagged?"
     higher_is_better = False
-    dimensions = ("segment",)
-    waiting_on = "links between documents that amend or replace each other."
+    dimensions = ("segment", "document_type", "link", "field")
+    waiting_on = "links between documents that amend or replace each other (assay_sdk.documents.superseded_values)."
+
+    def compute(self, source, window: Window) -> MeasureOutput:
+        rows = source.document_checks(window, "superseded", "assay.superseded@1") \
+            if hasattr(source, "document_checks") else None
+        if rows is None:
+            return super().compute(source, window)
+        for r in rows:
+            r["link"] = r["raw"].get("link")
+        from assay.measures.documents import _slices
+        return _slices(self.id, rows, self.dimensions,
+                       lambda g: (sum(r["raw"].get("outcome") == "escaped" for r in g), len(g)))
 
 
 class EscapeRate(_AwaitingTruth):

@@ -56,12 +56,14 @@ IMPROVES: Dict[str, List[tuple]] = {
     "errors_by_origin": [("stage_runs", "sequence", "order steps exactly instead of by start time")],
 }
 
-WAITING_ON_GROUND_TRUTH = {"superseded_value_rate"}
+WAITING_ON_GROUND_TRUTH: set = set()  # every accuracy measure now has a way in: see SCORED
 # Measured from scored checks (assay_sdk.documents): live once the first one arrives.
 SCORED = {"field_accuracy": ("field_scores", (), "fields scored against their correct values (score_document)"),
           "split_stp": ("split_scores", (), "files scored against their correct boundaries (score_split)"),
           "escape_rate": ("document_checks", ("spot_check", "assay.spotcheck@1"),
                           "spot checks of published output (spot_check)"),
+          "superseded_value_rate": ("document_checks", ("superseded", "assay.superseded@1"),
+                                    "documents checked against the later ones replacing them (superseded_values)"),
           "ocr_cer": ("document_checks", ("ocr",), "OCR text scored against the page (score_ocr)"),
           "ocr_digit_error_rate": ("document_checks", ("ocr",), "OCR text scored against the page (score_ocr)"),
           "ocr_reading_order": ("document_checks", ("ocr",), "OCR text scored against the page (score_ocr)"),

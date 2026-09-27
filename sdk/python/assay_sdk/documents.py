@@ -48,7 +48,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 __all__ = ["Text", "Number", "Money", "Date", "LineItems", "score_document", "check_rules", "total_of",
            "before", "required", "rule", "DocumentScore", "FieldScore", "EVALUATOR", "classify_document",
            "score_split", "SplitScore", "score_ocr", "OcrScore", "score_locations", "appears_in", "score_table",
-           "TableScore", "spot_check", "SPOT_CHECKS"]
+           "TableScore", "spot_check", "SPOT_CHECKS", "superseded_values", "SUPERSEDED"]
 
 EVALUATOR = "assay.documents@1"
 CORRECT, WRONG, MISSING, INVENTED = "correct", "wrong", "missing", "invented"
@@ -1025,3 +1025,55 @@ def spot_check(document_id: str, field: str, published: Any, correct: Any, spec:
           category=None if f.passed else f.kind,
           raw_output=json.dumps({"kind": "spot_check", "path": path, "by": checked_by, "wrong": not f.passed}))
     return bool(f.passed)
+
+
+
+# ---------- superseded values: a later document replaced them; did output follow? ----------
+
+SUPERSEDED = "superseded"
+
+
+def superseded_values(old_document_id: str, new_document_id: str, old: Dict[str, Any], new: Dict[str, Any],
+                      output: Dict[str, Any], flagged: Union[bool, Sequence[str]] = (),
+                      schema: Optional[Dict[str, _Field]] = None, link: str = "replaces",
+                      checked_by: Optional[str] = None) -> Dict[str, str]:
+    """A later document amends or replaces an earlier one (a corrected invoice, an amended
+    contract). For each field whose value it changed: what does output hold for the earlier
+    document now?
+
+      updated    the new value: output followed
+      flagged    still the old value, but marked as superseded or held for review
+      escaped    the old value (or another wrong one), unmarked: the costly case, since whatever
+                 reads output takes it as current
+
+    `flagged`: True for the whole document, or the fields marked. `link`: "replaces" or
+    "amends". Sent as checks of the run `superseded` against the earlier document, so the
+    dashboard's **Superseded values reaching output** is the share escaped. Fields the new
+    document left unchanged aren't counted. Returns {field: outcome}."""
+    from assay_sdk import check
+    schema = schema or {}
+    names = [k for k in dict.fromkeys(list(new) + list(schema))]
+    marked = set(names) if flagged is True else set(flagged or ())
+    out = {}
+    for name in names:
+        spec = schema.get(name) or Text()
+        before, after, now = _get(old, name), _get(new, name), _get(output, name)
+        if isinstance(spec, LineItems) or empty(after) and empty(before):
+            continue
+        if _cell_ok(spec, before, after):
+            continue  # not superseded: the new document says the same
+        if _cell_ok(spec, after, now):  # the new value, or nothing when the new document dropped it
+            outcome = "updated"
+        elif name in marked:
+            outcome = "flagged"
+        else:
+            outcome = "escaped"
+        out[name] = outcome
+        stale = "the old value" if _cell_ok(spec, before, now) else "neither value" if not empty(now) else "nothing"
+        check(SUPERSEDED, f"{old_document_id}->{new_document_id}:{name}", "fail" if outcome == "escaped" else "pass",
+              run_id=old_document_id, field=name, expected=after, actual=now, evaluator="assay.superseded@1",
+              reason=f"output holds {stale} ({now!r}); {new_document_id} {link} it with {after!r}"
+              if outcome == "escaped" else None, category="superseded" if outcome == "escaped" else None,
+              raw_output=json.dumps({"kind": "superseded", "outcome": outcome, "link": link,
+                                     "new_document": new_document_id, "by": checked_by}))
+    return out

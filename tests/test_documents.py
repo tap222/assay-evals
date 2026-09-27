@@ -490,3 +490,44 @@ def test_dashboard_measures_and_the_report(project):
     live = {m["id"]: m for m in coverage.compute(src, w)["measures"]}
     assert live["ocr_cer"]["status"] == "live" and live["escape_rate"]["status"] == "blocked"
     assert live["escape_rate"]["missing"] == ["spot checks of published output (spot_check)"]
+
+
+from assay_sdk.documents import superseded_values  # noqa: E402
+
+
+def test_values_a_later_document_replaced_and_whether_output_followed(project, monkeypatch):
+    import assay_sdk as assay
+    from assay import coverage, local, store
+    from assay.measures.ground_truth import SupersededValues
+    from assay.models import Window
+    from assay.sources.events import EventsSource
+    path = project / "superseded.jsonl"
+    monkeypatch.setenv("ASSAY_PATH", str(path))
+    assay.init()
+    schema = {"total": Money(), "due_date": Date(day_first=True), "po_number": Text()}
+    old = {"total": "1,234.56", "due_date": "30/04/2026", "po_number": "PO-1", "vendor": "Acme"}
+    new = {"total": "1,200.00", "due_date": "30/04/2026", "po_number": "", "vendor": "Acme"}  # a credit note's correction
+    got = superseded_values("inv-17", "inv-17-corrected", old, new,
+                            output={"total": "1234.56", "due_date": "2026-04-30", "po_number": None}, schema=schema)
+    assert got == {"total": "escaped", "po_number": "updated"}  # due_date and vendor unchanged: not counted
+    assert superseded_values("inv-18", "inv-18b", {"total": "5"}, {"total": "6"}, {"total": "5"}, flagged=["total"],
+                             schema=schema, link="amends") == {"total": "flagged"}
+    assert superseded_values("inv-19", "inv-19b", {"total": "5"}, {"total": "6"}, {"total": "6.00"},
+                             schema=schema) == {"total": "updated"}
+    assay.shutdown()
+    engine = store.make_engine("sqlite://")
+    store.metadata.create_all(engine)
+    assert local.load_file(engine, str(path), "t")[1] == []
+    now = datetime.utcnow()
+    w = Window(now - timedelta(days=1), now + timedelta(days=1))
+    m = SupersededValues().compute(EventsSource(engine, "t"), w)
+    assert m.status == "measured" and m.overall.value == 0.25 and m.overall.denominator == 4
+    assert {r.slice_value: r.value for r in m.results if r.dimension == "link"} == {"amends": 0.0, "replaces": 1 / 3}
+    assert {r.slice_value: r.value for r in m.results if r.dimension == "field"} == {"po_number": 0.0, "total": 1 / 3}
+    from sqlalchemy import select
+    t = store.eval_results
+    with engine.connect() as conn:
+        reason = conn.execute(select(t.c.reason).where(t.c.status == "fail")).scalar()
+    assert reason == "output holds the old value ('1234.56'); inv-17-corrected replaces it with '1,200.00'"
+    assert {x["id"]: x["status"] for x in coverage.compute(EventsSource(engine, "t"), w)["measures"]}[
+        "superseded_value_rate"] == "live"

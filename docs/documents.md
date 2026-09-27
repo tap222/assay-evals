@@ -228,6 +228,35 @@ Each is a check of the run `spot-checks` against the production document. The da
 way it went out (`reviewed` or `auto-approved`), so it says which of the two lets more through.
 It's a sample: its n says how far to trust it.
 
+## Superseded values: a later document replaced them; did output follow?
+
+A corrected invoice, an amended contract, a credit note: a later document changes values an
+earlier one gave. If output still holds the old value, unmarked, whatever reads it takes it as
+current. Nothing in the pipeline's own records says so, so check it: for a later document and the
+one it replaces, compare what output holds now.
+
+```python
+from assay_sdk.documents import superseded_values, Money, Date
+
+superseded_values("inv-17", "inv-17-corrected", old=extracted_17, new=extracted_17b,
+                  output=published["inv-17"], flagged=held_for_review, schema=SCHEMA, link="replaces")
+# {"total": "escaped", "po_number": "updated"}
+```
+
+Each field the later document changed is one of:
+
+| Outcome | Output holds |
+|---|---|
+| updated | the new value (or nothing, when the new document dropped it) |
+| flagged | the old value, marked as superseded or held for review (`flagged`: the fields, or True for all) |
+| escaped | the old value, or another wrong one, unmarked |
+
+Fields it left the same aren't counted. Each is sent as a check of the run `superseded`, against
+the earlier document ("output holds the old value ('1234.56'); inv-17-corrected replaces it with
+'1,200.00'"), and the dashboard's **Superseded values reaching output**
+(`superseded_value_rate`) is the share escaped, by segment, document type, field, and whether the
+later document `replaces` or `amends` the earlier one.
+
 ## Where on the page a value was read
 
 ```python
@@ -286,6 +315,7 @@ segment, with the usual expected range and alerts ([Measures](measures.md)):
 | Fields read from the right place (`location_accuracy`), also by field | `score_locations` |
 | Table cells right (`table_cell_f1`) | `score_table` |
 | Escape rate (`escape_rate`), also by the way a value went out | `spot_check` |
+| Superseded values reaching output (`superseded_value_rate`), also by field and link | `superseded_values` |
 
 Each is unmeasured until its first check arrives, and `GET /v1/coverage` says which call it's waiting on. A document's type is its run's task: record the pipeline's runs as
 `assay.run("invoice", ...)` for the slices to be document types. Under the `assay_case` fixture
