@@ -32,7 +32,10 @@ REGRESSIONS
 - **Real, or noise.** Run each case several times and Assay tells chance (8/8 → 7/8, passes)
   from too few attempts to tell (inconclusive) from a regression (8/8 → 0/8, fails), corrected for
   the number of checks: [repeated attempts](docs/repeats.md). A result that couldn't be judged
-  is kept apart, never scored as 0. A PR can't loosen the checks that judge it.
+  is kept apart, never scored as 0.
+- **The checks are the review.** A PR can't loosen the checks that judge it: removing a
+  contract, raising a limit, or deleting, skipping or filtering out the test its change breaks
+  fails the run until a maintainer accepts it with a label: [security](docs/security.md).
 - **Agents and workflows.** Trajectories, path and claim contracts, plan adherence, multi-turn
   conversations, and simulated users.
 - **Judges you can check.** Calibration against labels a person gave, bias probes, drift, whether
