@@ -117,6 +117,8 @@ _pytest_config = None  # the session's config, for hooks that aren't given it
 def pytest_configure(config):
     global _pytest_config
     _pytest_config = config
+    config.addinivalue_line("markers", "assay_rewordings: the test's cases are rewordings of one request "
+                                       "(assay_sdk.testing.rewordings)")
     config._assay_session = None
     if not config.getoption("assay", False):
         return
@@ -329,6 +331,21 @@ def pytest_runtest_makereport(item, call):
         item._assay_report = report
 
 
+def _rewording_tags(node) -> dict:
+    """For a test marked with rewordings(): which request it rewords, its wording, and its place (0: the original).
+    Other parameters stay in the group, so test_x[wording1-O-17] rewords test_x[wording0-O-17]."""
+    m = node.get_closest_marker("assay_rewordings")
+    spec = getattr(node, "callspec", None)
+    if m is None or spec is None or m.kwargs.get("arg") not in spec.params:
+        return {}
+    text = spec.params[m.kwargs["arg"]]
+    index = m.kwargs["wordings"].index(text)
+    rest = "-".join("*" if p == f"wording{index}" else p for p in spec.id.split("-"))
+    base = node.nodeid.split("[", 1)[0]
+    return {"rewording_of": case_id(base if rest == "*" else f"{base}[{rest}]"), "wording": str(text)[:200],
+            "wording_index": index}
+
+
 @pytest.fixture
 def assay_case(request):
     if assay._client is None:
@@ -336,7 +353,7 @@ def assay_case(request):
     node = request.node
     node.user_properties.append(("assay_case", case_id(node.nodeid)))
     with assay.run(node.originalname or node.name, test=case_id(node.nodeid),
-                   tags={"pytest": node.nodeid[:200]}) as run:
+                   tags={"pytest": node.nodeid[:200], **_rewording_tags(node)}) as run:
         node._assay_run = run
         yield run
     report = getattr(node, "_assay_report", None)

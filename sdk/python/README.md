@@ -316,6 +316,9 @@ totals are too, and `[behavior] max_fragments` and `max_retrieved_tokens` are li
 For the test body, `assay_sdk.testing` has `assert_called(run, tool, **args)`,
 `assert_not_called`, `assert_called_before(run, first, then)`, `assert_max_steps(run, n)`,
 `assert_answer_contains` and `assert_no_pii`. Each fails with what the run actually did.
+`@rewordings("Can I get a refund for O-18?", "refund O-18 pls")` runs a test once per wording,
+and `pytest --assay` checks each rewording does what the original does
+([Rewordings](../../docs/testing.md#rewordings-the-same-request-in-other-words)).
 
 `pytest --assay` (with `assay-server` installed) also compares each test with its last passing
 run, prints Assay's report in pytest's summary, and exits 1 only when something got worse.

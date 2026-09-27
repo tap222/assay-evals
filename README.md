@@ -37,7 +37,8 @@ REGRESSIONS
   contract, raising a limit, or deleting, skipping or filtering out the test its change breaks
   fails the run until a maintainer accepts it with a label: [security](docs/security.md).
 - **Agents and workflows.** Trajectories, path and claim contracts, plan adherence, multi-turn
-  conversations, and simulated users.
+  conversations, and simulated users. [Rewordings](docs/testing.md#rewordings-the-same-request-in-other-words):
+  the same request in other words must get the same behavior.
 - **Judges you can check.** Calibration against labels a person gave, bias probes, drift, whether
   it ranks answers or only recognizes the topic, and a trust label on every judged score.
 - **What caused it.** The prompt, model, tools, input and settings that changed next to each

@@ -17,7 +17,28 @@ import time
 from typing import Any, Callable, List, Optional, Tuple
 
 __all__ = ["tool_calls", "assert_called", "assert_not_called", "assert_called_before", "assert_max_steps",
-           "assert_answer_contains", "assert_no_pii", "expect", "Expectations"]
+           "assert_answer_contains", "assert_no_pii", "expect", "Expectations", "rewordings"]
+
+
+def rewordings(*wordings: str, arg: str = "wording"):
+    """Run a test once per wording of the same request; the first is the original.
+
+        @rewordings("Can I get a refund for O-18?", "I want my money back for O-18", "refund O-18 pls")
+        def test_no_refund_before_delivery(assay_case, wording):
+            support_agent(assay_case, wording, "O-18")
+
+    Each wording is a case (test_no_refund_before_delivery[wording1]), and with `pytest --assay`
+    each rewording is also checked against the original: the same tools in the same order, and
+    passing where it passes. Add wordings at the end, so the others keep their case ids.
+    """
+    import pytest
+    if len(wordings) < 2:
+        raise ValueError("rewordings: the original and at least one other wording")
+
+    def mark(fn):
+        fn = pytest.mark.parametrize(arg, list(wordings), ids=[f"wording{i}" for i in range(len(wordings))])(fn)
+        return pytest.mark.assay_rewordings(arg=arg, wordings=list(wordings))(fn)
+    return mark
 
 
 def tool_calls(run) -> List[dict]:

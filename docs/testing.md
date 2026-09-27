@@ -98,6 +98,47 @@ SDK), and adds `--repeat N` for flaky cases and `--junit report.xml` for CI. Its
 - **Where things live:** everything goes in `.assay/` (recordings, the store, the baseline),
   which ignores itself in git. `assay test -- pytest -q tests/ai` overrides the command.
 
+## Rewordings: the same request in other words
+
+A test passes on its exact wording and the agent breaks on another: "Can I get a refund for
+O-18?" is handled, "refund O-18 pls" gets refunded without a check. Write the test once, with
+the wordings it should handle alike; the first is the original:
+
+```python
+from assay_sdk.testing import rewordings
+
+@rewordings("Can I get a refund for O-18?", "I want my money back for O-18", "refund O-18 pls")
+def test_no_refund_before_delivery(assay_case, wording):
+    support_agent(assay_case, wording, "O-18")
+    assert_not_called(assay_case, "refund")
+```
+
+Each wording is a case (`test_no_refund_before_delivery[wording2]`), with its own checks and
+baseline as usual. On top of that, each rewording gets a check of its own, **Same behavior
+reworded**: it fails when the rewording takes a path (tools, approvals and resources, in order)
+the original never took in a passing attempt, or fails where the original passed every time.
+
+```
+⚠ 1 case regressed (1 check)
+
+1. tests/ai/test_support.py::test_no_refund_before_delivery[wording2]  Same behavior reworded
+   does something else than the original wording ('Can I get a refund for O-18?'): new: refund
+```
+
+- **Compared with all of the original's attempts,** not the one with the same number. An agent
+  that takes one of two paths at random isn't called sensitive to wording because the two runs
+  were out of step. With `repeat`, the check is judged like any other: flaky, needs reruns, or a
+  regression against its baseline.
+- **A new wording is checked the first time it runs.** It has no baseline yet, but it has the
+  original: one that already behaves differently is a new failure. Wordings from production, or
+  from `assay synth`, can be added at the end of the list (adding them at the end keeps the other
+  cases' ids, and so their baselines).
+- **Where the original fails** there's nothing to be consistent with, and the rewordings aren't
+  judged on it: the original's own failure is the regression.
+- **Without pytest,** tag the runs: `assay.run(..., test="refund-2", tags={"rewording_of":
+  "refund", "wording": text, "wording_index": 2})`, with index 0 for the original. Other
+  parametrize arguments stay in the group: `test_x[wording1-O-17]` rewords `test_x[wording0-O-17]`.
+
 ## Can a judged number be trusted?
 
 Every judged check in the report says whether its judge was calibrated against people, how well,

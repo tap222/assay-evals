@@ -53,7 +53,8 @@ CHECK_NAMES = {"plan_quality": "Plan quality", "consistency": "Consistency", "co
                "faithfulness": "Faithfulness", "context_relevance": "Context relevance",
                "max_fixed_context_tokens": "Fixed context per call", "tool_choice": "Tool choice",
                "tool_args": "Tool arguments", "tool_results": "Tool results", "arguments": "Well-formed arguments",
-               "claimed_success": "Claimed success", "context_retention": "Context retention"}
+               "claimed_success": "Claimed success", "context_retention": "Context retention",
+               "rewording": "Same behavior reworded"}
 PII_EVALUATOR = "assay.pii@1"
 
 CONFIG_TEMPLATE = '''\
@@ -1637,6 +1638,7 @@ CATEGORIES = [  # (name, which checks): the first that matches a check's field t
     ("Planning", lambda f: f in ("plan", "plan_quality")),
     ("Reasoning", lambda f: f == "consistency"),
     ("Grounding", lambda f: f in ("faithfulness", "context_relevance")),
+    ("Rewordings", lambda f: f == "rewording"),
     ("Behavior", lambda f: f in behavior.LIMITS or f.startswith(("expect.max_cost", "expect.max_latency",
                                                                   "expect.max_tools", "expect.max_context"))),
     ("Output quality", lambda f: True),  # the answer, the end state, your asserts, your own fields
@@ -2228,6 +2230,8 @@ def finish(root: Path, cfg: dict, run_id: str, repeat: int, codes: List[int], ba
             return 2, f"{CONFIG}, [judge]: {exc}"
         judged = judge.judge_run(engine, TENANT, run_id, cfg["judge"]["model"], redact=cfg["judge"]["redact"],
                                  provider=cfg["judge"].get("provider", "anthropic"), rt=rt)
+    from assay import rewordings  # each rewording against its original, before anything is compared
+    rewordings.check(engine, TENANT, run_id)
     result = evaluate(engine, run_id, baseline, cfg["tolerance"], cfg["pii"], cfg["behavior"], abandoned_why, cfg.get("acks"))
     if result is None:
         return 2, ("Nothing to check: record runs with assay.run(..., test=\"<case>\"), and say what each case "
