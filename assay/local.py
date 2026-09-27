@@ -119,6 +119,12 @@ suite = 1.25             # the whole run's totals: every query a little bigger a
 # threshold = 3
 # group_by = "tags"          # also ranked within each tag ("input": answers to the same input)
 
+# Document extraction scored with assay_sdk.documents: the confidence at or above which your
+# pipeline skips review, so the report says how many wrong values that lets through.
+# [documents]
+# auto_approve = 0.9
+# target = 0.99              # the accuracy a suggested threshold must reach
+
 # Dollars per million tokens (input, output[, cached]): recorded model calls get their cost.
 # [prices]
 # "claude-opus-5" = [5, 25]
@@ -239,7 +245,8 @@ def load_config(root: Path, path: Optional[Path] = None, policy: bool = True) ->
                     "answers": bool(pii.get("answers", True)), "answer_allow": set(answer_allow)},
             "pytest": {"checks": bool((cfg.get("pytest") or {}).get("checks", True))},
             "behavior": _behavior_config(cfg.get("behavior") or {}), "judge": _judge_config(cfg.get("judge") or {}),
-            "prices": _prices_config(cfg.get("prices")), "calibrate": _calibrate_config(cfg.get("calibrate") or {})}
+            "prices": _prices_config(cfg.get("prices")), "calibrate": _calibrate_config(cfg.get("calibrate") or {}),
+            "documents": _documents_config(cfg.get("documents") or {})}
     if out["prices"] and "prices" not in out["judge"]:
         out["judge"]["prices"] = out["prices"]
     from assay import acks
@@ -248,6 +255,22 @@ def load_config(root: Path, path: Optional[Path] = None, policy: bool = True) ->
     except acks.AckError as exc:
         raise SetupError(str(exc))
     return with_trusted_policy(out) if policy else out
+
+
+def _documents_config(c: dict) -> dict:
+    """[documents]: auto_approve, the confidence at or above which your pipeline skips review, and
+    target, the accuracy a threshold must reach to be suggested (default 0.99)."""
+    unknown = set(c) - {"auto_approve", "target"}
+    if unknown:
+        raise SetupError(f"{CONFIG}, [documents]: unknown {', '.join(sorted(unknown))}. Use auto_approve, target.")
+    out = {"auto_approve": None, "target": 0.99}
+    for k in ("auto_approve", "target"):
+        if k in c:
+            v = c[k]
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= 1:
+                raise SetupError(f"{CONFIG}, [documents] {k}: a share from 0 to 1, e.g. 0.9.")
+            out[k] = float(v)
+    return out
 
 
 def _calibrate_config(c: dict) -> dict:
@@ -494,7 +517,7 @@ def _behavior_config(b: dict) -> dict:
 
 DEFAULT_CONFIG = {"command": None, "repeat": 1, "timeout": None, "tolerance": 0.01, "contracts": [],  # no assay.toml
                   "pii": {"check": True, "allow": {}, "answers": True, "answer_allow": set()}, "pytest": {"checks": True},
-                  "prices": None, "acks": [], "calibrate": None, "behavior": {"fail": True, "ratios": {}, "suite": behavior.SUITE_RATIO, "limits": {}},
+                  "prices": None, "acks": [], "calibrate": None, "documents": {"auto_approve": None, "target": 0.99}, "behavior": {"fail": True, "ratios": {}, "suite": behavior.SUITE_RATIO, "limits": {}},
                   "judge": {"enabled": False, "model": "claude-opus-5", "redact": True, "provider": "anthropic"}}
 
 
@@ -2015,7 +2038,7 @@ def report(run_id: str, baseline: Optional[str], result: dict, repeat: int, code
     out.append("")
     if result.get("documents"):
         from assay import documents
-        out += documents.lines(result["documents"], result.get("documents_before")) + [""]
+        out += documents.lines(result["documents"], result.get("documents_before"), result.get("documents_cfg")) + [""]
     out += trust_block
     if result.get("fixed_context"):
         out += [_paint("Fixed context per call", "bold"), f"  {fixed_context_text(result['fixed_context'])}", ""]
@@ -2253,6 +2276,7 @@ def finish(root: Path, cfg: dict, run_id: str, repeat: int, codes: List[int], ba
         (f"compared with each case's last passing run ({len(known)} of {len(ran)} cases have one, from "
          f"{_n(len(set(known.values())), 'run')})")
     result["behavior_fails"] = cfg["behavior"]["fail"]
+    result["documents_cfg"] = cfg.get("documents")
     text, passed = report(run_id, baseline, result, repeat, codes, against)
     if judged is not None:
         text += _paint(f"\nJudged {_n(judged['judged'], 'run')} with {cfg['judge']['model']} (plan quality, "

@@ -172,3 +172,122 @@ def test_field_accuracy_waits_for_scored_documents():
     now = datetime.utcnow()
     out = FieldAccuracy().compute(EventsSource(engine, "t"), Window(now - timedelta(days=1), now))
     assert out.status == "unmeasured" and "score_document" in out.reason
+
+
+# ---------- phase 2: document types, splitting, confidence ----------
+
+from types import SimpleNamespace  # noqa: E402
+
+from assay_sdk.documents import classify_document, score_split  # noqa: E402
+
+
+def rows_of(recorder, case="c"):
+    return [SimpleNamespace(evaluator=c.get("evaluator"), raw_output=c.get("raw_output"), status=c["status"],
+                            field=c["field"], case_id=f"{case}{i}") for i, c in enumerate(recorder.checks)]
+
+
+def test_a_document_type_is_right_or_it_says_what_it_was_taken_for():
+    r = Recorder()
+    assert classify_document(r, "Invoice", " invoice")
+    assert not classify_document(r, "invoice", "receipt", confidence=0.4)
+    assert not classify_document(r, "invoice", None)
+    assert [c["status"] for c in r.checks] == ["pass", "fail", "fail"]
+    assert r.checks[1]["reason"] == "classified as 'receipt', not 'invoice'" and r.checks[1]["category"] == "misclassified"
+    assert json.loads(r.checks[1]["raw_output"]) == {"kind": "classification", "expected": "invoice",
+                                                     "predicted": "receipt", "confidence": 0.4}
+    from assay.documents import summarize
+    t = summarize(rows_of(r))["types"]
+    assert t["n"] == 3 and t["right"] == 1 and t["mistakes"] == [["invoice", "(none)", 1], ["invoice", "receipt", 1]]
+    assert t["per_type"]["invoice"] == {"precision": 1.0, "recall": 1 / 3, "n": 3}
+    assert t["per_type"]["receipt"]["precision"] == 0.0
+
+
+def test_a_split_says_what_went_wrong():
+    merged = score_split(None, [(1, 2), (3, 3), (4, 6)], [(1, 2), (3, 6)])
+    assert not merged.correct and merged.notes == ["pages 3-6 came out as one document, which is 2"]
+    assert merged.boundaries == {"tp": 1, "fp": 0, "fn": 1}
+    cut = score_split(None, [(1, 3)], [(1, 1), (2, 3)])
+    assert cut.notes == ["pages 1-3 is one document, cut into 2"]
+    shifted = score_split(None, [1, 3, 5], [1, 4, 5], page_count=6)  # first pages, with the page count
+    assert shifted.notes == ["the document starting on page 3 was split at page 4"] and shifted.right == [(5, 6)]
+    assert score_split(None, [{"pages": [1, 2]}, {"start": 3, "end": 4}], [(1, 2), (3, 4)]).correct
+    with pytest.raises(ValueError, match="page_count"):
+        score_split(None, [1, 3], [1, 3])
+
+
+def test_confidence_says_what_threshold_is_safe_and_what_yours_lets_through():
+    from assay.documents import confidence
+    # 40 values: confident ones right, unconfident ones often wrong; one confident mistake at 0.95.
+    pairs = [(0.99, True)] * 20 + [(0.95, False)] + [(0.95, True)] * 9 + [(0.6, True)] * 5 + [(0.6, False)] * 5
+    c = confidence(pairs, target=0.99, threshold=0.9)
+    assert c["n"] == 40 and round(c["accuracy"], 3) == round(34 / 40, 3)
+    assert c["suggested"]["threshold"] == 0.99 and c["suggested"]["approved"] == 0.5  # 0.95 lets the mistake in
+    assert c["suggested"]["low"] < 0.99  # 20 of 20 can't prove 99%
+    assert c["at"] == {"threshold": 0.9, "approved": 0.75, "wrong": 1, "accuracy": 29 / 30, "wrong_total": 6}
+    # 0.99 and 0.95 share the top tenth: 30 values, 29 right, said 0.977; the 0.6 tenth: 10 values, half right.
+    assert round(c["ece"], 4) == round((abs(29 / 30 - (0.99 * 20 + 0.95 * 10) / 30) * 30 + 0.1 * 10) / 40, 4)
+    assert confidence([(0.9, True)] * 5, 0.99)["suggested"] is None  # too few to call anything safe
+
+
+PHASE2 = '''
+import os
+from assay_sdk.documents import classify_document, score_split, score_document, Text, Money
+
+SCHEMA = {"number": Text(), "total": Money()}
+FILES = {"f1": ([(1, 2), (3, 4)], "invoice"), "f2": ([(1, 1), (2, 3)], "receipt"), "f3": ([(1, 3)], "invoice")}
+after = os.environ.get("MODE") == "after"
+
+def run_file(case, name):
+    truth, kind = FILES[name]
+    split = [(1, 4)] if after and name == "f1" else truth           # the PR merges f1's two documents
+    guessed = "receipt" if after and name == "f3" else kind         # and takes f3 for a receipt
+    classify_document(case, kind, guessed, confidence=0.97)
+    score_split(case, truth, split)
+    conf = {"number": 0.99, "total": 0.93 if name == "f2" else 0.99}
+    got = {"number": "1", "total": "9" if name == "f2" else "10"}   # f2's total is wrong, and fairly sure of it
+    score_document(case, {"number": "1", "total": "10"}, got, SCHEMA, confidence=conf)
+
+def test_f1(assay_case): run_file(assay_case, "f1")
+def test_f2(assay_case): run_file(assay_case, "f2")
+def test_f3(assay_case): run_file(assay_case, "f3")
+'''
+
+
+def test_types_splitting_and_confidence_in_the_report(project):
+    (project / "tests").mkdir()
+    (project / "tests" / "test_files.py").write_text(PHASE2)
+    (project / "assay.toml").write_text('[test]\ncommand = "pytest -q tests"\n\n[documents]\nauto_approve = 0.9\n')
+    first = run(project)
+    assert first.returncode == 1 and "f2" in first.stdout  # no baseline yet: f2's wrong total fails
+    from assay.__main__ import main
+    assert main(["accept"]) == 0
+    out = run(project, env={"MODE": "after"})
+    assert out.returncode == 1
+    assert "Types        3 classified · right 2/3 (66.7%, was 100%)" in out.stdout
+    assert "invoice → receipt 1" in out.stdout
+    assert "Splitting    3 files · split right 2/3 (66.7%, was 100%) · with several documents 1/2" in out.stdout
+    assert "pages 1-4 came out as one document, which is 2" in out.stdout
+    assert "Confidence   9 values" in out.stdout and "overconfident" in out.stdout  # fields and types
+    assert "at your auto_approve 0.9: 100% approved, 2 wrong values among them (was 1), of 2 wrong in all: " \
+        "they'd skip review" in out.stdout  # the confident misclassification is the second
+    md = (project / ".assay" / "summary.md").read_text()
+    assert "types right 2/3 (66.7%, was 100%)" in md and "files split right 2/3" in md
+
+    from assay import store
+    from assay.measures.ground_truth import SplitStraightThrough
+    from assay.models import Window
+    from assay.sources.events import EventsSource
+    engine = store.make_engine(f"sqlite:///{project / '.assay' / 'assay.db'}")
+    now = datetime.utcnow()
+    m = SplitStraightThrough().compute(EventsSource(engine, "local"), Window(now - timedelta(days=1), now + timedelta(1)))
+    assert m.status == "measured" and m.overall.n == 4 and m.overall.value == 0.75  # f1, f2 in both runs; f1 broke once
+
+
+def test_documents_config_is_checked(project):
+    from assay import local
+    (project / "assay.toml").write_text('[test]\ncommand = "true"\n\n[documents]\nauto_approve = 90\n')
+    with pytest.raises(local.SetupError, match="a share from 0 to 1"):
+        local.load_config(project)
+    (project / "assay.toml").write_text('[test]\ncommand = "true"\n\n[documents]\nthreshold = 0.9\n')
+    with pytest.raises(local.SetupError, match="Use auto_approve, target"):
+        local.load_config(project)

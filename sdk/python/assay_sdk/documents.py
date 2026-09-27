@@ -45,7 +45,8 @@ from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 __all__ = ["Text", "Number", "Money", "Date", "LineItems", "score_document", "check_rules", "total_of",
-           "before", "required", "rule", "DocumentScore", "FieldScore", "EVALUATOR"]
+           "before", "required", "rule", "DocumentScore", "FieldScore", "EVALUATOR", "classify_document",
+           "score_split", "SplitScore"]
 
 EVALUATOR = "assay.documents@1"
 CORRECT, WRONG, MISSING, INVENTED = "correct", "wrong", "missing", "invented"
@@ -464,9 +465,10 @@ def _rules(rules: Sequence[Rule], extracted: Any) -> Dict[str, Tuple[Optional[bo
 
 # ---------- recording ----------
 
-def _record(run, name: str, f: FieldScore) -> None:
+def _record(run, name: str, f: FieldScore, confidence: Optional[float] = None) -> None:
     raw = json.dumps({"kind": f.kind, "weight": f.weight, "share": round(f.share, 6), **f.counts,
-                      **({"part_of": f.part_of} if f.part_of else {})})
+                      **({"part_of": f.part_of} if f.part_of else {}),
+                      **({"confidence": float(confidence)} if confidence is not None else {})})
     if f.kind == "unreadable":
         run.check(name, "error", expected=f.expected, actual=f.actual, evaluator=EVALUATOR, reason=f.note,
                   error_kind="invalid", raw_output=raw)
@@ -487,9 +489,13 @@ def _record_rules(run, results: Dict[str, Tuple[Optional[bool], str]]) -> None:
 
 
 def score_document(run, expected: Any, extracted: Any, schema: Optional[Dict[str, _Field]] = None,
-                   rules: Sequence[Rule] = ()) -> DocumentScore:
+                   rules: Sequence[Rule] = (), confidence: Optional[Dict[str, float]] = None) -> DocumentScore:
     """Score one document's extraction against its correct values, and record each field, the line
-    items, `document` (all fields correct) and each rule as checks on `run` (None: only score)."""
+    items, `document` (all fields correct) and each rule as checks on `run` (None: only score).
+
+    confidence: the extractor's confidence per field (0-1), where it gives one. Recorded with each
+    field, so the report can say whether a confident value is a right one, which threshold would
+    auto-approve safely, and how many wrong values a threshold lets through."""
     if schema is None:
         schema = {k: Text() for k in (expected or {})}
     fields: Dict[str, FieldScore] = {}
@@ -504,7 +510,7 @@ def score_document(run, expected: Any, extracted: Any, schema: Optional[Dict[str
     doc = DocumentScore(fields, _rules(rules, extracted))
     if run is not None:
         for name, f in fields.items():
-            _record(run, name, f)
+            _record(run, name, f, (confidence or {}).get(name) if not f.part_of else None)
         bad = doc.wrong()
         acc = doc.accuracy
         run.check("document", "pass" if doc.all_correct else "fail", evaluator=EVALUATOR,
@@ -521,3 +527,105 @@ def check_rules(run, extracted: Any, rules: Sequence[Rule]) -> Dict[str, Tuple[O
     if run is not None:
         _record_rules(run, out)
     return out
+
+
+# ---------- document type ----------
+
+def classify_document(run, expected: Any, predicted: Any, confidence: Optional[float] = None) -> bool:
+    """Whether the document's type was classified right ("invoice" vs "Invoice " is the same type),
+    recorded as the check `document_type`. The report counts every run's pairs into a confusion
+    matrix, with precision and recall per type."""
+    e, p = Text().read(expected) if not empty(expected) else None, Text().read(predicted) if not empty(predicted) else None
+    if e is None:
+        if run is not None:
+            run.check("document_type", "error", expected=expected, actual=predicted, evaluator=EVALUATOR,
+                      reason="no correct type to compare with", error_kind="invalid")
+        return False
+    ok = e == p
+    if run is not None:
+        run.check("document_type", "pass" if ok else "fail", expected=expected, actual=predicted, evaluator=EVALUATOR,
+                  reason=None if ok else f"classified as {predicted!r}, not {expected!r}" if p else "no type given",
+                  category=None if ok else "misclassified",
+                  raw_output=json.dumps({"kind": "classification", "expected": e, "predicted": p,
+                                         **({"confidence": float(confidence)} if confidence is not None else {})}))
+    return ok
+
+
+# ---------- splitting a file into its documents ----------
+
+@dataclass
+class SplitScore:
+    expected: List[Tuple[int, int]]
+    predicted: List[Tuple[int, int]]
+    right: List[Tuple[int, int]]  # documents split exactly: the same first and last page
+    notes: List[str]
+    boundaries: Dict[str, int]  # tp, fp, fn over the pages a new document starts on (after the first)
+
+    @property
+    def correct(self) -> bool:
+        return self.expected == self.predicted
+
+
+def _segments(v: Any, page_count: Optional[int]) -> List[Tuple[int, int]]:
+    """Documents as (first page, last page), 1-based: from ranges, page lists, or the first pages."""
+    items = list(v or [])
+    if items and all(isinstance(x, int) for x in items):  # first pages: each runs to the next one
+        if page_count is None:
+            raise ValueError("score_split: first pages alone need page_count")
+        starts = sorted(set(items))
+        return [(s, (starts[i + 1] - 1) if i + 1 < len(starts) else page_count) for i, s in enumerate(starts)]
+    out = []
+    for x in items:
+        if isinstance(x, dict):
+            x = x.get("pages") or (x.get("start"), x.get("end"))
+        x = list(x)
+        out.append((int(min(x)), int(max(x))) if len(x) != 2 else (int(x[0]), int(x[1])))
+    return sorted(out)
+
+
+def _pages(s: Tuple[int, int]) -> str:
+    return f"page {s[0]}" if s[0] == s[1] else f"pages {s[0]}-{s[1]}"
+
+
+def score_split(run, expected: Any, predicted: Any, page_count: Optional[int] = None) -> SplitScore:
+    """Score how a file was split into documents, recorded as the check `split`: passes when every
+    document starts and ends on the right page. Documents are given as page ranges ((1, 2), (3, 3)),
+    page lists, or their first pages (with page_count). Says what went wrong: documents merged,
+    one cut in two, a boundary a page off."""
+    exp, pred = _segments(expected, page_count), _segments(predicted, page_count)
+    right = sorted(set(exp) & set(pred))
+    starts = lambda segs: {s[0] for s in segs} - {min((x[0] for x in segs), default=1)}
+    es, ps = starts(exp), starts(pred)
+    missed, extra = sorted(es - ps), sorted(ps - es)
+    notes, explained = [], set()
+    for m in missed:  # a boundary a page or two off: one note, not a merge and a cut
+        near = min((x for x in extra if abs(x - m) <= 2 and x not in explained), key=lambda x: abs(x - m),
+                   default=None)
+        if near is not None:
+            notes.append(f"the document starting on page {m} was split at page {near}")
+            explained |= {m, near}
+    for e in exp:
+        if e in right or e[0] in explained or e[1] + 1 in explained:
+            continue
+        over = [p for p in pred if p[0] <= e[1] and p[1] >= e[0]]
+        if len(over) == 1 and over[0][0] <= e[0] and over[0][1] >= e[1] and over[0] != e:
+            others = [x for x in exp if x != e and over[0][0] <= x[0] and x[1] <= over[0][1]]
+            if others:
+                note = f"{_pages(over[0])} came out as one document, which is {len(others) + 1}"
+                if note not in notes:
+                    notes.append(note)
+                continue
+        if len(over) > 1 and all(e[0] <= p[0] and p[1] <= e[1] for p in over):
+            notes.append(f"{_pages(e)} is one document, cut into {len(over)}")
+        else:
+            notes.append(f"{_pages(e)}: " + (", ".join(_pages(p) for p in over) if over else "no document") + " instead")
+    bounds = {"tp": len(es & ps), "fp": len(ps - es), "fn": len(es - ps)}
+    score = SplitScore(exp, pred, right, notes, bounds)
+    if run is not None:
+        run.check("split", "pass" if score.correct else "fail", expected=json.dumps(exp), actual=json.dumps(pred),
+                  evaluator=EVALUATOR, reason=None if score.correct else "; ".join(notes[:4]),
+                  category=None if score.correct else "split_wrong",
+                  raw_output=json.dumps({"kind": "split", "documents": len(exp), "tp": len(right),
+                                         "fp": len(pred) - len(right), "fn": len(exp) - len(right),
+                                         "boundaries": bounds}))
+    return score

@@ -92,6 +92,69 @@ A rule a document can't be checked on (a value it needs is missing) is skipped, 
 `required` is the rule for a value that must be there. A rule that raises is reported as a rule
 that couldn't run, not as a failed document.
 
+## Document types
+
+```python
+from assay_sdk.documents import classify_document
+
+classify_document(assay_case, expected="invoice", predicted=pipeline.doc_type, confidence=pipeline.type_confidence)
+```
+
+A check, `document_type`, per document ("Invoice" and "invoice " are the same type). The report
+adds up the run's pairs into a confusion matrix: which type was taken for which, and precision
+and recall per type. A wrong type usually makes the fields read from it wrong too: for errors
+reported from production (`/v1/errors`), Assay's failure analysis traces those back to the type.
+
+## Splitting a file into its documents
+
+```python
+from assay_sdk.documents import score_split
+
+score_split(assay_case, expected=[(1, 2), (3, 3), (4, 6)], predicted=pipeline.documents)
+# or first pages: score_split(assay_case, [1, 3, 4], [1, 3], page_count=6)
+```
+
+A check, `split`, per file: it passes when every document starts and ends on the right page, and
+otherwise says how it went wrong:
+
+- "pages 3-6 came out as one document, which is 2" (merged)
+- "pages 1-3 is one document, cut into 2"
+- "the document starting on page 3 was split at page 4" (a boundary a page or two off)
+
+The report gives the share of files split right (and of those holding several documents),
+precision and recall over documents (right when their first and last pages are), and over the
+pages a new document starts on. On the dashboard, **Document splitting straight-through**
+(`split_stp`) is the share of files holding several documents that split right.
+
+## Confidence: when is a value safe to approve without review?
+
+Give the extractor's confidence per field (and per type), and the report says whether it means
+anything:
+
+```python
+score_document(assay_case, expected, extracted, SCHEMA, confidence={"total": 0.93, "invoice_date": 0.99})
+```
+
+```toml
+[documents]
+auto_approve = 0.9    # your pipeline skips review at or above this
+target = 0.99         # the accuracy a suggested threshold must reach (default)
+```
+
+```
+Confidence   9 values · calibration error 0.199 (was 0.088) · says 97.7% on average, right 77.8%: overconfident
+             no threshold reaches 99.0% right over 10 values or more
+             at your auto_approve 0.9: 100% approved, 2 wrong values among them (was 1), of 2 wrong in all: they'd skip review
+```
+
+- **Calibration error:** the gap between the confidence it states and how often it's right,
+  averaged over ten bands of confidence. Overconfident means it's sure of values it gets wrong.
+- **A threshold to approve at:** the lowest confidence whose values at or above it are right at
+  least `target` of the time, over 10 values or more, with the share it would approve. The lower
+  end of its 95% interval is shown too: 20 right out of 20 can't show 99%.
+- **At your threshold:** what it approves, and how many wrong values are among them: the ones
+  that would reach output without anyone looking.
+
 ## In the report
 
 `assay test` and `pytest --assay` add a Documents block, against the baseline:

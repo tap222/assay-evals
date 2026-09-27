@@ -21,10 +21,30 @@ class _AwaitingTruth(Measure):
 
 
 class SplitStraightThrough(_AwaitingTruth):
+    """From files scored against their correct boundaries (assay_sdk.documents.score_split): the share
+    of files holding several documents where every document came out on the right pages. A test
+    set's files had no person split them, so right is straight-through."""
     id = "split_stp"
     name = "Document splitting straight-through"
     question = "What share of multi-document files split correctly with no human touch?"
-    waiting_on = "files with human-confirmed document boundaries."
+    dimensions = ("segment",)
+    waiting_on = "files with human-confirmed document boundaries (assay_sdk.documents.score_split)."
+
+    def compute(self, source, window: Window) -> MeasureOutput:
+        scores = source.split_scores(window) if hasattr(source, "split_scores") else None
+        if scores is None:
+            return super().compute(source, window)
+        multi = [s for s in scores if s["documents"] > 1]
+
+        def one(dim, val, group):
+            return SliceResult(dim, val, sum(s["right"] for s in group) / len(group) if group else None, len(group),
+                               numerator=sum(s["right"] for s in group), denominator=len(group))
+        results = [one(None, None, multi)]
+        by = defaultdict(list)
+        for s in multi:
+            by[s["segment"] if s["segment"] not in (None, "") else UNRECORDED].append(s)
+        results += [one("segment", v, g) for v, g in sorted(by.items())]
+        return MeasureOutput(self.id, "measured", results)
 
 
 class FieldAccuracy(_AwaitingTruth):
