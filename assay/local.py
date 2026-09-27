@@ -54,7 +54,7 @@ CHECK_NAMES = {"plan_quality": "Plan quality", "consistency": "Consistency", "co
                "max_fixed_context_tokens": "Fixed context per call", "tool_choice": "Tool choice",
                "tool_args": "Tool arguments", "tool_results": "Tool results", "arguments": "Well-formed arguments",
                "claimed_success": "Claimed success", "context_retention": "Context retention",
-               "rewording": "Same behavior reworded"}
+               "rewording": "Same behavior reworded", "document": "All fields correct"}
 PII_EVALUATOR = "assay.pii@1"
 
 CONFIG_TEMPLATE = '''\
@@ -828,6 +828,8 @@ def compare(engine, run_id: str, baseline: Optional[str], tolerance: float, beha
     out["kinds"] = failure_kinds(rows, base_rows)
     out["setup"] = setup_changes(engine, tenant, rows, base_rows) if baseline else {}
     out["fixed_context"] = fixed_context(engine, tenant, rows, base_rows)
+    from assay import documents  # extraction scored per field (assay_sdk.documents): precision, recall, all correct
+    out["documents"], out["documents_before"] = documents.summarize(rows), documents.summarize(base_rows)
     return out
 
 
@@ -1926,6 +1928,9 @@ def summary_markdown(run_id: str, result: dict, code: int, against: Optional[str
     out += ack_markdown(result)
     for x in result.get("surface") or []:
         out += [f"> {_md(x['text'])}", ""]
+    if result.get("documents"):
+        from assay import documents
+        out += [f"**Documents:** {_md(documents.markdown(result['documents'], result.get('documents_before')))}", ""]
     if result.get("kinds"):
         out += [f"**Failures by kind:** {_md(kinds_text(result['kinds']))}", ""]
     if result.get("fixed_context"):
@@ -2008,6 +2013,9 @@ def report(run_id: str, baseline: Optional[str], result: dict, repeat: int, code
             line += _paint(f"   {_pct(f['base_passed'], f['base_total'])} → {_pct(f['passed'], f['total'])}", "dim")
         out.append(line)
     out.append("")
+    if result.get("documents"):
+        from assay import documents
+        out += documents.lines(result["documents"], result.get("documents_before")) + [""]
     out += trust_block
     if result.get("fixed_context"):
         out += [_paint("Fixed context per call", "bold"), f"  {fixed_context_text(result['fixed_context'])}", ""]

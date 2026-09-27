@@ -106,6 +106,37 @@ class EventsSource:
         return [CallRecord(**{k: v for k, v in r.items() if k != "tenant"})
                 for r in self._rows(t, t.c.ts, window)] + self._as_calls(self._agent_steps(window))
 
+    def field_scores(self, window: Window) -> Optional[List[dict]]:
+        """Extracted fields scored against their correct values (assay_sdk.documents), with their
+        document's type and segment: {"document_id", "document_type", "segment", "field", "weight",
+        "share"}. None if this tenant has never sent one. Line-item columns are left out: their
+        table is counted whole."""
+        import json
+        t, d = store.eval_results, store.event_documents
+        from assay.local import BASELINE  # copies of passing runs' results: counted once, as themselves
+        cond = [t.c.tenant == self.tenant, t.c.evaluator == "assay.documents@1", t.c.status.in_(("pass", "fail")),
+                t.c.field != "document", ~t.c.field.startswith("rule: "), t.c.run_id != BASELINE]
+        with self.engine.connect() as conn:
+            if conn.execute(select(t.c.result_id).where(and_(*cond[:2])).limit(1)).first() is None:
+                return None
+            if window is not None:
+                cond += [t.c.ts >= window.start, t.c.ts < window.end]
+            rows = conn.execute(select(t.c.document_id, t.c.case_id, t.c.field, t.c.raw_output, d.c.document_type,
+                                       d.c.segment).select_from(t.outerjoin(
+                d, and_(d.c.tenant == t.c.tenant, d.c.document_id == t.c.document_id))).where(and_(*cond))).all()
+        out = []
+        for r in rows:
+            try:
+                raw = json.loads(r.raw_output or "{}")
+            except ValueError:
+                raw = {}
+            if raw.get("part_of"):
+                continue
+            out.append({"document_id": r.document_id or r.case_id, "document_type": r.document_type,
+                        "segment": r.segment, "field": r.field, "weight": float(raw.get("weight") or 1.0),
+                        "share": float(raw.get("share", 1.0 if raw.get("kind") == "correct" else 0.0))})
+        return out
+
     def documents(self, window: Window) -> Iterable[DocumentRecord]:
         t = store.event_documents
         return [DocumentRecord(**{k: v for k, v in r.items() if k not in ("tenant", "delivered_downstream")})

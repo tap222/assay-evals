@@ -316,6 +316,8 @@ totals are too, and `[behavior] max_fragments` and `max_retrieved_tokens` are li
 For the test body, `assay_sdk.testing` has `assert_called(run, tool, **args)`,
 `assert_not_called`, `assert_called_before(run, first, then)`, `assert_max_steps(run, n)`,
 `assert_answer_contains` and `assert_no_pii`. Each fails with what the run actually did.
+`assay_sdk.documents` scores document extraction field by field: `score_document(run, expected,
+extracted, schema, rules)` ([Document extraction](../../docs/documents.md)).
 `assay_sdk.frameworks` runs DeepEval and RAGAS metrics as checks: `check(run, metric, test_case)`, and
 `assert_test`, a drop-in for DeepEval's ([DeepEval and RAGAS](../../docs/frameworks.md)).
 `@rewordings("Can I get a refund for O-18?", "refund O-18 pls")` runs a test once per wording,

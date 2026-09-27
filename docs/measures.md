@@ -31,7 +31,7 @@ Every alert has an **Investigate** link to its slice. `#measures/<id>` and
 | **Cost** | `cost_per_document`, `cost_per_page`, `total_spend`, `human_touch_rate`, `cost_coverage` (see Cost below) |
 | **Pipeline integrity** | `fallback_attribution` (does each call record which model tier answered, and why), `model_mismatch` (served ≠ declared), `revision_coverage`, `noop_stage_rate` (stages that report success without doing work), `source_positions` (values a reviewer can click through to), `handoff_loss` (finished documents missing downstream) |
 | **Errors** | `reported_error_rate`, `errors_by_origin`, `prompt_error_rate` (see Error analysis and Prompt versions) |
-| **Accuracy** | `split_stp`, `field_accuracy`, `superseded_value_rate`, `escape_rate`: listed as *unmeasured* until labelled ground truth can be ingested |
+| **Accuracy** | `field_accuracy`: fields scored against their correct values ([Document extraction](documents.md)), weighted by what an error costs, by document type, segment and field. `split_stp`, `superseded_value_rate`, `escape_rate`: listed as *unmeasured* until the labels they need can be ingested |
 
 Every measure reports an overall row plus one row per slice value. A missing dimension is
 kept as an `(unrecorded)` slice. A source that can't provide the data makes a measure
