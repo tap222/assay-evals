@@ -301,7 +301,12 @@ def pytest_terminal_summary(terminalreporter, config):
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_call(item):
-    out = yield  # a failing test raises here, and fails as it would anyway
+    global _current_item
+    _current_item = item
+    try:
+        out = yield  # a failing test raises here, and fails as it would anyway
+    finally:
+        _current_item = None
     run = getattr(item, "_assay_run", None)
     if run is None:
         return out
@@ -348,9 +353,44 @@ def _rewording_tags(node) -> dict:
 
 @pytest.fixture
 def assay_case(request):
+    case = _case(request.node)
+    yield next(case)
+    next(case, None)
+
+
+_current_item = None  # the test being run, for current_case()
+
+
+def current_case():
+    """The running test's Assay run: the assay_case fixture's, or, for a test that doesn't take it
+    (a DeepEval suite calling assay_sdk.frameworks.assert_test), one opened for it now and closed
+    when the test ends. None outside a test, or when nothing is being recorded."""
+    item = _current_item
+    if item is None:
+        return getattr(assay, "current", lambda: None)()
+    run = getattr(item, "_assay_run", None)
+    if run is not None:
+        return run
+    if not os.environ.get("ASSAY_PATH"):  # plain pytest: nothing records, so nothing to open
+        return None
+    case = _case(item)
+    item._assay_opened = case
+    return next(case)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_runtest_teardown(item):
+    case = getattr(item, "_assay_opened", None)
+    if case is not None:  # current_case() opened it: record the test's result and close it
+        item._assay_opened = None
+        next(case, None)
+
+
+def _case(node):
+    """One test as an Assay case: opens its run, yields it for the test, and when resumed after the
+    test, records pytest's pass or fail as a check of its own."""
     if assay._client is None:
         assay.init()
-    node = request.node
     node.user_properties.append(("assay_case", case_id(node.nodeid)))
     with assay.run(node.originalname or node.name, test=case_id(node.nodeid),
                    tags={"pytest": node.nodeid[:200], **_rewording_tags(node)}) as run:

@@ -49,6 +49,9 @@ def _not_judged(errors: list) -> tuple:
         return BY_KIND.get(kind, "EVALUATOR_ERROR"), reason
     return ("INFRA_ERROR" if INFRA_REASON.search(reason) else "EVALUATOR_ERROR"), reason
 MISSING_COVERAGE = 0.5  # an evaluator is expected on every case once it has reported on this share
+# Metrics a test calls in its own body (assay_sdk.frameworks): a test that doesn't call one doesn't use
+# it, so how many cases it covered says nothing. A case that had it in its baseline still does.
+INLINE = ("deepeval:", "ragas:")
 
 
 def of_check(state: dict, rows: list, findings: Optional[List[str]] = None) -> tuple:
@@ -110,6 +113,8 @@ def missing(rows: list, base_rows: Optional[list] = None) -> List[dict]:
             add(ev, case, field, f"{ev} reported on {len(expected)} of these cases in the baseline, none in this run"
                 if not got else f"{ev} reported on this case in the baseline, not in this run")
     for ev, covered in sorted(by_eval.items()):
+        if ev.startswith(INLINE):
+            continue
         if len(covered) >= MISSING_COVERAGE * len(cases) and covered != cases:
             field = fields[ev].most_common(1)[0][0]
             for case in sorted(cases - covered):

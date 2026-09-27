@@ -47,6 +47,9 @@ REGRESSIONS
   test cases. Before there's traffic, `assay synth` generates queries from dimensions you define,
   kept apart from production.
 
+Already on DeepEval or RAGAS? Their metrics run as Assay checks, and an existing DeepEval suite
+changes one import: [DeepEval and RAGAS](docs/frameworks.md).
+
 `assay connect` attaches Assay to an existing app (through its database, a few lines of code, or a
 proposed test per model call), with any model provider. `assay demo && assay serve` shows it on
 synthetic data.
