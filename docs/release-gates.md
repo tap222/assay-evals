@@ -28,9 +28,9 @@ run:
 
 | State | Meaning |
 |---|---|
-| got worse | the pass rate dropped beyond chance: one-sided Fisher exact test, with Benjamini–Hochberg across all checks (so 5,000 checks don't produce 250 false alarms) |
-| needs reruns | plausibly worse, but too few attempts to tell. Says how many more attempts would settle it |
-| flaky | both outcomes seen, and no worse than before |
+| got worse | the pass rate dropped beyond chance: one-sided Fisher exact test, with Benjamini–Hochberg at 5% across all checks that could have moved (so 5,000 checks don't produce 250 false alarms). Or the check collapsed: every attempt passed before and every one fails now, three or more each |
+| needs reruns | plausibly worse, but too few attempts to tell: the same correction at 25%, or a collapse with fewer than three attempts. Says how many more attempts would settle it |
+| flaky | both outcomes seen, and no worse than chance |
 | improved, stable pass, stable fail, errored | as named |
 
 A flaky check says what varies:
@@ -57,4 +57,15 @@ The decision is one of:
 | roll back | the counted pass rate is lower than the tolerance allows, even at the optimistic end of its interval |
 | hold | checks got worse beyond chance, or an intended change is waiting for a decision |
 | rerun | nothing proven worse, but some checks can't be judged yet. Returns the list, with attempts per check |
-| advance | otherwise. Flaky checks are reported and don't block |
+| advance | otherwise. Flaky checks are reported and don't block. If the interval still reaches past the tolerance, the reasons say so: not proven worse, not proven fine |
+
+Two gates, because they answer different questions. The run-level interval asks whether the
+suite got broadly worse; it treats each check as one unit (a paired t interval over the checks'
+pass-rate changes), since 50 attempts of one task say a lot about that task and nothing about
+the others. The per-check states ask whether something that worked stopped working. A change
+can pass the first and fail the second: one task going 8/8 → 0/8 among seven moves the average
+by 14 points, within a small suite's interval, and holds the release as a check that got worse.
+
+Measured on simulated unchanged changes (8 attempts per check, per-check pass rates between 60%
+and 100%), 96–100% advance for suites of 5, 10 and 50 checks. The same checks with one task
+collapsed from 8/8 to 0/8 hold every time.

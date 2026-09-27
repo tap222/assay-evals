@@ -168,17 +168,17 @@ def test_eval_gate_reruns_a_flaky_drop_and_records_it(client):
     now = datetime.utcnow()
     for run, start, flaky_now in (("g1", now - timedelta(days=2), False), ("g2", now - timedelta(hours=1), True)):
         results = []
-        for i in range(50):
-            for k in range(3):
-                bad = flaky_now and i < 2 and k == 1
+        for i in range(5):
+            for k in range(6):
+                bad = flaky_now and i < 2 and k % 2 == 1  # 6/6 → 3/6 on two of five checks: plausible, unproven
                 results.append({"run_id": run, "case_id": f"c{i}", "field": "total", "expected": "10",
                                 "actual": "11" if bad else "10", "status": "fail" if bad else "pass",
                                 "evaluator": "exact@1", "attempt": k,
-                                "ts": (start + timedelta(seconds=i * 3 + k)).isoformat()})
+                                "ts": (start + timedelta(seconds=i * 6 + k)).isoformat()})
         client.post("/v1/events/eval-results", json=results, headers={"X-Tenant": "g"})
     st = client.get("/v1/evals/runs/g2/stability", params={"source": "events:g"}).json()
     assert st["outcome"] == "rerun" and st["states"]["needs_reruns"] == 2
-    assert st["reruns"][0]["outcomes"] == "●○●" and st["reruns"][0]["reruns"] > 0
+    assert st["reruns"][0]["outcomes"] == "●○●○●○" and st["reruns"][0]["reruns"] > 0
     g = client.post("/v1/evals/runs/g2/gate", json={"source": "events:g"}).json()
     assert g["outcome"] == "rerun" and g["lineage"]["eval_run"] == "g2" and g["lineage"]["baseline_run"] == "g1"
     assert client.get("/v1/gates").json()[0]["outcome"] == "rerun"

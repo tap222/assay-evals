@@ -44,7 +44,8 @@ and the check is an `EVALUATOR_ERROR`: the evaluator contradicts itself. `GET /v
 lists them, and the Failures page shows the counts.
 
 `assay test` lists what couldn't be judged apart, never as a regression, and exits **3**
-(inconclusive) when nothing got worse but some results couldn't be judged: 0 passed, 1 failed,
+(inconclusive) when nothing got worse but some results couldn't be judged, or some checks could
+be worse and need more attempts to tell: 0 passed, 1 failed,
 2 setup problem, 3 inconclusive. An inconclusive run doesn't move any baseline. In
 `--junit` output these cases are `<error>`, JUnit's "couldn't run", not `<failure>`.
 

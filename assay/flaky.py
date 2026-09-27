@@ -8,9 +8,15 @@ in a run and in its baseline:
 
   got_worse     the pass rate dropped beyond chance (one-sided Fisher exact
                 test, Benjamini-Hochberg across all checks, so 5,000 checks
-                don't produce 250 false alarms)
-  needs_reruns  plausibly worse, but too few attempts to tell: rerun, don't block
-  flaky         both outcomes seen, and not worse than before
+                don't produce 250 false alarms), or the check collapsed:
+                every attempt passed before and every one fails now, three
+                or more each. Fisher's test is cautious with few attempts,
+                and a capability that's gone shouldn't wait on it
+  needs_reruns  plausibly worse, but too few attempts to tell: rerun, don't block.
+                Corrected for the number of checks too: in a suite of 50, some
+                check drops a little by chance on almost every run, and 8/8 →
+                7/8 is no evidence of anything
+  flaky         both outcomes seen, and no worse than chance
   improved      the pass rate rose beyond chance
   stable_pass / stable_fail
   errored       every attempt errored, so nothing was judged
@@ -28,13 +34,13 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from statistics import fmean, stdev
 from typing import Dict, List, Optional, Tuple
 
-from assay.gates import bootstrap_diff_ci
-
 MAX_ATTEMPTS = 20  # stop asking for reruns past this many attempts per check
-Q_LEVEL = 0.10  # false-discovery rate for "got worse" / "improved"
-PLAUSIBLE = 0.5  # a drop with p up to this is worth rerunning rather than ignoring
+Q_LEVEL = 0.05  # false-discovery rate for "got worse" / "improved"
+PLAUSIBLE = 0.25  # a drop with q up to this is worth rerunning rather than ignoring
+COLLAPSE = 3  # attempts on each side for all-passed → all-failing to count as got worse on its own
 
 
 # ---------- exact statistics, no dependencies ----------
@@ -95,6 +101,22 @@ def bh(pvalues: List[float]) -> List[float]:
         running = min(running, pvalues[i] * m / rank)
         q[i] = running
     return q
+
+
+# Two-sided 95% points of Student's t, by degrees of freedom (1-30); past 30, the normal's.
+_T975 = [12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145,
+         2.131, 2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048,
+         2.045, 2.042]
+
+
+def paired_change(before: List[float], after: List[float]) -> Tuple[float, float, float]:
+    """Mean change per check with a paired t interval (95%). The check is the unit: 50 attempts of one
+    task say a lot about that task and nothing about the others. A percentile bootstrap of five
+    differences is far too narrow; t widens it by what five can't tell you."""
+    d = [a - b for b, a in zip(before, after)]
+    point, n = fmean(d), len(d)
+    half = (_T975[n - 2] if n - 1 <= len(_T975) else 1.96) * stdev(d) / math.sqrt(n)
+    return point, point - half, point + half
 
 
 def reruns_needed(passes: int, n: int, base_passes: int, base_n: int, cap: int = MAX_ATTEMPTS) -> int:
@@ -159,18 +181,25 @@ def assess(candidate: Dict[tuple, List], baseline: Dict[tuple, List]) -> Dict[tu
         mixed = (0 < c < n) or (nb and 0 < a < nb)
         x["flake"] = flake_source(rows + base) if mixed or (e and c) else None
         out[key] = x
+    # Every check that could have moved counts towards the correction, not just the ones that did.
+    m = sum(1 for x in out.values() if x["attempts"] and x["base_attempts"])
     for keys, p, q in ((worse_i, "p_worse", "q_worse"), (better_i, "p_better", "q_better")):
-        for k, qv in zip(keys, bh([out[k][p] for k in keys])):
+        ps = [out[k][p] for k in keys]
+        for k, qv in zip(keys, bh(ps + [1.0] * (m - len(ps)))):
             out[k][q] = qv
     for key, x in out.items():
         n = x["attempts"]
         if not n:
             x["state"] = "errored"
-        elif x.get("q_worse") is not None and x["q_worse"] <= Q_LEVEL:
+        elif x.get("q_worse") is not None and (x["q_worse"] <= Q_LEVEL or (
+                x["passed"] == 0 and x["base_passed"] == x["base_attempts"] and min(n, x["base_attempts"]) >= COLLAPSE)):
             x["state"] = "got_worse"
         elif x.get("q_better") is not None and x["q_better"] <= Q_LEVEL:
             x["state"] = "improved"
-        elif x.get("p_worse") is not None and x["p_worse"] <= PLAUSIBLE and n < MAX_ATTEMPTS:
+        elif x.get("q_worse") is not None and n < MAX_ATTEMPTS and (
+                x["q_worse"] <= PLAUSIBLE or (x["passed"] == 0 and x["base_passed"] == x["base_attempts"])):
+            # Corrected for the number of checks, or every attempt passed before and every one fails now:
+            # a whole capability gone isn't waved through as chance because the suite is large.
             x["state"] = "needs_reruns"
             x["reruns"] = reruns_needed(x["passed"], n, x["base_passed"], x["base_attempts"])
         elif x["flake"]:
@@ -238,7 +267,7 @@ def summarize(states: Dict[tuple, dict], tolerance: float = 0.01, roles: Optiona
         role_counts[r] += 1
     change = None
     if len(paired) >= 2:
-        point, lo, hi = bootstrap_diff_ci([b for b, _ in paired], [c for _, c in paired], paired=True, iters=1000)
+        point, lo, hi = paired_change([b for b, _ in paired], [c for _, c in paired])
         change = {"point": point, "low": lo, "high": hi, "checks": len(paired)}
     # How much the run's pass rate moves from attempt noise alone: the spread of the mean of
     # per-check Bernoulli outcomes. Two runs differing by less than this are the same.
@@ -279,13 +308,16 @@ def summarize(states: Dict[tuple, dict], tolerance: float = 0.01, roles: Optiona
         outcome = "rerun"
         reasons.append(f"{len(reruns):,} checks can't be judged yet. Rerun them ({more:,} more attempts in all) "
                        "instead of blocking.")
-    elif change and change["low"] < -tolerance:
-        outcome = "hold"
-        reasons.append(f"The pass rate could be lower by up to {-change['low']:.2%}, above the {tolerance:.2%} "
-                       "tolerance. Add attempts to narrow it.")
     else:
         outcome = "advance"
-        reasons.append("No check got worse beyond chance, and the pass rate is within tolerance.")
+        # Not proven worse, but not proven fine either. Said, not blocked: holding on it would hold
+        # nearly every run of a small or flaky suite, since a 1% drop can't be ruled out.
+        if change and change["low"] < -tolerance:
+            reasons.append(f"No check got worse beyond chance, and the pass rate isn't proven lower than the "
+                           f"tolerance allows. It could be lower by up to {-change['low']:.2%}: more attempts or "
+                           "more cases narrow it.")
+        else:
+            reasons.append("No check got worse beyond chance, and the pass rate is within tolerance.")
     if outcome in ("rollback", "hold") and role_counts["intended"] and not reasons[0].endswith("problem."):
         reasons.append(f"{role_counts['intended']:,} checks {ROLES['intended']}.")
     if reruns and outcome != "rerun":

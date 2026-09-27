@@ -22,7 +22,7 @@ inputs:
     description: Post the summary on the pull request, updating Assay's earlier comment.
     default: "true"
   fail-on-inconclusive:
-    description: Fail the job when nothing got worse but some results couldn't be judged.
+    description: Fail the job when nothing got worse but some results couldn't be judged, or need more attempts to tell.
     default: "true"
   token:
     description: "For the PR comment: needs `pull-requests: write`."

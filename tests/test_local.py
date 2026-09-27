@@ -108,6 +108,47 @@ def test_fields_known_failures_accept_and_flakiness(project, capsys, monkeypatch
     assert main(["test"]) == 0  # only the flaky check fails: it doesn't block
 
 
+AGENT = '''
+import os
+import assay_sdk as assay
+assay.init()
+attempt, fails = int(os.environ["ASSAY_TEST_ATTEMPT"]), int(os.environ.get("FAILS", "0"))
+for i in range(5):
+    ok = not (i == 0 and attempt < fails)  # task_0 fails its first FAILS attempts of 8
+    assay.check(None, f"task_{i}", "pass" if ok else "fail", field="solved", expected="yes", actual="yes" if ok else "no")
+'''
+
+
+def test_repeated_attempts_tell_chance_from_a_regression(project, capsys, monkeypatch):
+    (project / "agent.py").write_text(AGENT)
+    config(project, f"{sys.executable} agent.py", repeat=8)
+    assert main(["test"]) == 0
+    first = json.loads((project / ".assay" / "state.json").read_text())["baseline_cases"]
+    capsys.readouterr()
+
+    monkeypatch.setenv("FAILS", "1")  # 8/8 → 7/8 on one task of five: what an unchanged agent does
+    assert main(["test"]) == 0
+    out = capsys.readouterr().out
+    assert "1 flaky check" in out and "except 1 case whose pass rate dropped within chance" in out
+    # Passing, but not the new bar: the next run is still compared with 8/8.
+    assert json.loads((project / ".assay" / "state.json").read_text())["baseline_cases"]["task_0"] == first["task_0"]
+
+    monkeypatch.setenv("FAILS", "4")  # 8/8 → 4/8: could be worse, can't be told yet
+    assert main(["test", "--junit", "report.xml"]) == 3
+    xml = (project / "report.xml").read_text()
+    assert 'errors="1"' in xml and 'failures="0"' in xml and "too few attempts to tell" in xml
+    out = capsys.readouterr().out
+    assert "? 1 needs reruns" in out and "task_0  solved  100% → 50%" in out
+    assert "Inconclusive: nothing is proven worse, but 1 check could be" in out and "Failed." not in out
+    assert json.loads((project / ".assay" / "state.json").read_text())["baseline_cases"]["task_0"] == first["task_0"]
+    assert "could be worse, or chance" in (project / ".assay" / "summary.md").read_text()
+    main(["diff"])
+    assert "? 1 could be worse, or chance: needs reruns" in capsys.readouterr().out
+
+    monkeypatch.setenv("FAILS", "8")  # 8/8 → 0/8: the capability is gone
+    assert main(["test"]) == 1 and "task_0" in capsys.readouterr().out
+
+
 def test_setup_problems_exit_2(project, capsys):
     assert main(["test"]) == 2 and "Run `assay init` first" in capsys.readouterr().err
     config(project, f"{sys.executable} -c pass")

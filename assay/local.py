@@ -680,11 +680,19 @@ def pii_findings(traj: dict, allow: Dict[str, set], request: Any = None, answers
 BASELINE = "baseline"  # the per-case baseline, kept as an evaluation run of its own
 
 
-def promote(engine, run_id: str) -> List[str]:
+def dropped(result: dict) -> set:
+    """Cases with a check whose pass rate is lower than in its baseline, beyond chance or not."""
+    base = result["base_attempts"]
+    return {case for (case, f), a in result["attempts"].items()
+            if a and base.get((case, f)) and sum(a) / len(a) < sum(base[(case, f)]) / len(base[(case, f)])}
+
+
+def promote(engine, run_id: str, keep: Optional[set] = None) -> List[str]:
     """Make this run each of its cases' baseline: its results replace those cases' results in the
-    baseline, and only theirs, so running a subset leaves every other case's baseline alone."""
+    baseline, and only theirs, so running a subset leaves every other case's baseline alone. Cases
+    in `keep` keep the baseline they have."""
     t = store.eval_results
-    rows = _rows(engine, run_id)
+    rows = [r for r in _rows(engine, run_id) if r.case_id not in (keep or set())]
     cases = sorted({r.case_id for r in rows})
     copies = [{**dict(r._mapping), "run_id": BASELINE, "result_id": ingest._derive(BASELINE, r.result_id)}
               for r in rows]
@@ -1384,13 +1392,14 @@ def failing(rows: list) -> Dict[Tuple[str, str], dict]:
 
 def classify(result: dict, has_baseline: bool) -> dict:
     """Sort each failing check: a problem (a regression, a new case that fails, or with no baseline
-    any failure), flaky (passes some attempts, and did before; doesn't block), or still failing
-    (failed in the baseline too; not this change's doing)."""
+    any failure), flaky (passes some attempts, no worse than chance; doesn't block), unsure (plausibly
+    worse, too few attempts to tell: inconclusive, not a regression), or still failing (failed in the
+    baseline too; not this change's doing)."""
     cur, base = result["attempts"], result["base_attempts"]
     st = result["stability"]
     flaky_keys = {(i["case_id"], i["field"] or "result") for i in st["flaky"]}
     unsure_keys = {(i["case_id"], i["field"] or "result") for i in st["reruns"]}
-    out = {"problems": [], "flaky": [], "still": [], "acked": []}
+    out = {"problems": [], "flaky": [], "unsure": [], "still": [], "acked": []}
     decided = result.get("acks") or {}
     quiet, woke = decided.get("quiet") or {}, decided.get("woke") or {}
     changed = result.get("judge_changed") or {}
@@ -1413,12 +1422,19 @@ def classify(result: dict, has_baseline: bool) -> dict:
             out["acked" if key in quiet else "still"].append({**item, "ack": quiet[key]} if key in quiet else item)
             continue
         elif has_baseline:
-            item.update(kind="regression", base_rate=sum(b) / len(b), unsure=key in unsure_keys)
-            if key in flaky_keys:  # flaky as before: said as such, acknowledged or not
+            # With one attempt there's nothing to tell chance by: a pass that became a failure is a regression.
+            item.update(kind="regression", base_rate=sum(b) / len(b), unsure=key in unsure_keys and len(a) > 1)
+            # Fails on exactly the model it was routed to: a cause, not chance, however few the attempts.
+            if item["rate"] < item["base_rate"] and routed((result.get("routing") or {}).get(key) or {"now": {}}):
+                item["unsure"] = False
+            elif key in flaky_keys:  # no worse than chance: said as such, acknowledged or not
                 out["flaky"].append(item)
                 continue
         if key in quiet:  # someone knows, and it's no worse than they saw: quiet, not blocking
             out["acked"].append({**item, "ack": quiet[key]})
+            continue
+        if item.get("unsure"):  # could be chance: more attempts settle it, a red build doesn't
+            out["unsure"].append(item)
             continue
         out["problems"].append(item)
     return out
@@ -1503,10 +1519,6 @@ def _explain(ps: List[dict], fails: dict, repeat: int, routes: Optional[dict] = 
     for p in rates[:3]:
         before = f"{p['base_rate']:.0%} of attempts before, " if p["base_rate"] is not None else ""
         lines.append(_paint(f"{p['case_id']} {_label(p['field'])}: passed {before}{p['rate']:.0%} now", "dim"))
-    explained = any(routed((routes or {}).get((p["case_id"], p["field"])) or {"now": {}}) for p in ps)
-    if repeat > 1 and any(p.get("unsure") for p in ps) and not explained:  # with one attempt, the hint below covers it
-        lines.append(_paint("Could be chance: too few attempts to tell. `assay test --repeat 10` settles it.",
-                            "yellow"))
     return lines
 
 
@@ -1562,6 +1574,9 @@ def write_junit(path: str, run_id: str, result: dict, c: dict) -> None:
         unjudged[x["case_id"]].append(f"{verdicts.VERDICTS[x['verdict']]}: {_label(x['field'] or 'result')}"
                                       f"{' (' + x['evaluator'] + ')' if x['evaluator'] else ''}: {x['reason']}")
     flaky = {p["case_id"] for p in c["flaky"]}
+    for p in c.get("unsure") or []:  # not settled: JUnit's "couldn't run", like a result that couldn't be judged
+        unjudged[p["case_id"]].append(f"{_label(p['field'])}: passed {p['base_rate']:.0%} of attempts before, "
+                                      f"{p['rate']:.0%} now: could be chance, too few attempts to tell")
     acked = {}
     for p in c.get("acked") or []:
         acked.setdefault(p["case_id"], p["ack"])
@@ -1613,7 +1628,7 @@ CATEGORIES = [  # (name, which checks): the first that matches a check's field t
     ("Output quality", lambda f: True),  # the answer, the end state, your asserts, your own fields
 ]
 BUCKETS = [("regressed", "✗", "red"), ("new failure", "✗", "red"), ("couldn't be judged", "?", "yellow"),
-           ("judge changed", "?", "yellow"),
+           ("needs reruns", "?", "yellow"), ("judge changed", "?", "yellow"),
            ("flaky", "⚠", "yellow"), ("known failure", "·", "dim"), ("acknowledged", "·", "dim"),
            ("passed", "✓", "green")]
 
@@ -1634,11 +1649,13 @@ def summarize(result: dict, c: dict, baseline: Optional[str]) -> dict:
         (worse_behavior if fails_behavior else set())
     new = {p["case_id"] for p in c["problems"] if p["kind"] not in ("regression", "worse than acknowledged")} - regressed
     unjudged = {x["case_id"] for x in result["not_judged"]} - regressed - new
-    rejudged = {p["case_id"] for p in c.get("judge_changed") or []} - regressed - new - unjudged
-    flaky = {p["case_id"] for p in c["flaky"]} - regressed - new - unjudged - rejudged
-    known = {p["case_id"] for p in c["still"]} - regressed - new - unjudged - rejudged - flaky
-    acked = {p["case_id"] for p in c.get("acked") or []} - regressed - new - unjudged - rejudged - flaky - known
-    buckets = {"regressed": regressed, "new failure": new, "couldn't be judged": unjudged, "judge changed": rejudged,
+    unsure = {p["case_id"] for p in c.get("unsure") or []} - regressed - new - unjudged
+    rejudged = {p["case_id"] for p in c.get("judge_changed") or []} - regressed - new - unjudged - unsure
+    flaky = {p["case_id"] for p in c["flaky"]} - regressed - new - unjudged - unsure - rejudged
+    known = {p["case_id"] for p in c["still"]} - regressed - new - unjudged - unsure - rejudged - flaky
+    acked = {p["case_id"] for p in c.get("acked") or []} - regressed - new - unjudged - unsure - rejudged - flaky - known
+    buckets = {"regressed": regressed, "new failure": new, "couldn't be judged": unjudged, "needs reruns": unsure,
+               "judge changed": rejudged,
                "flaky": flaky, "known failure": known, "acknowledged": acked}
     buckets["passed"] = cases - set().union(*buckets.values())
     by_case = defaultdict(dict)
@@ -1665,7 +1682,7 @@ def summary_block(s: dict) -> List[str]:
         n = len(s["buckets"][name])
         if n or name == "passed":
             label = name if n == 1 or name in ("passed", "flaky", "regressed", "couldn't be judged", "acknowledged",
-                                               "judge changed") \
+                                               "judge changed", "needs reruns") \
                 else name + "s"
             out.append(_paint(mark, color) + f" {n} {label}")
     if s["improved"]:
@@ -1682,7 +1699,7 @@ def summary_block(s: dict) -> List[str]:
 
 MARKER = "<!-- assay-regression -->"  # finds the PR comment to update (assay/github.py)
 HEADLINES = {0: "No AI regression", 1: "AI regression detected",
-             3: "Inconclusive: some results couldn't be judged"}
+             3: "Inconclusive: some results couldn't be judged, or need more attempts"}
 
 
 def _short(case: str) -> str:
@@ -1823,7 +1840,8 @@ def summary_markdown(run_id: str, result: dict, code: int, against: Optional[str
     s = result["summary"]
     b = s["buckets"]
     counts = [f"**{_n(s['cases'], 'case')}**", f"{len(b['passed'])} passed"]
-    for name in ("regressed", "new failure", "flaky", "couldn't be judged", "known failure", "acknowledged"):
+    for name in ("regressed", "new failure", "needs reruns", "flaky", "couldn't be judged", "known failure",
+                 "acknowledged"):
         if b.get(name):
             counts.append(f"{len(b[name])} {name}")
     jc = result.get("_judge_changed") or []
@@ -1924,6 +1942,13 @@ def summary_markdown(run_id: str, result: dict, code: int, against: Optional[str
     if models:
         out += ["| Model | Cases passing |", "|---|---|"] + [f"| {_md(m)} | {ok}/{n} |" for m, (ok, n) in models.items()]
         out.append("")
+    unsure = result.get("_unsure") or []
+    if unsure:
+        out += [f"<details><summary>{_n(len(unsure), 'check')} could be worse, or chance: too few attempts to "
+                f"tell</summary>", ""]
+        out += [f"- {_code(_short(p['case_id']))} {_md(_label(p['field']))}: passed {p['base_rate']:.0%} of attempts "
+                f"before, {p['rate']:.0%} now" for p in unsure[:20]]
+        out += ["", "More attempts settle it: `assay test --repeat 10`.", "", "</details>", ""]
     nj = result["not_judged"]
     if nj:
         out += [f"<details><summary>{_n(len(nj), 'result')} couldn't be judged</summary>", ""]
@@ -1941,6 +1966,7 @@ def summary_markdown(run_id: str, result: dict, code: int, against: Optional[str
 def report(run_id: str, baseline: Optional[str], result: dict, repeat: int, codes: List[int],
            against: Optional[str] = None) -> Tuple[str, bool]:
     passed, c = verdict(result, bool(baseline))
+    result["_unsure"] = c["unsure"]
     st, fails, fields = result["stability"], result["failing"], result["fields"]
     cases = len({case for case, _ in result["attempts"]})
     out = [_paint("Assay test", "bold") + f"  {run_id}", "─" * 44]
@@ -2026,8 +2052,15 @@ def report(run_id: str, baseline: Optional[str], result: dict, repeat: int, code
             if len(items) > 5:
                 out.append(f"    … and {len(items) - 5} more")
         out.append("")
+    if c["unsure"]:
+        out.append(_paint(f"? {_n(len(c['unsure']), 'check')} could be worse, or chance: too few attempts to tell "
+                          "(not a regression yet)", "yellow"))
+        for p in c["unsure"][:10]:
+            out.append(_paint(f"  {p['case_id']}  {_label(p['field'])}  {p['base_rate']:.0%} → {p['rate']:.0%}", "dim"))
+        out.append(_paint("  More attempts settle it: `assay test --repeat 10`.", "dim"))
+        out.append("")
     if c["flaky"]:
-        out.append(_paint(f"~ {_n(len(c['flaky']), 'flaky check')}: passing some attempts, as before; "
+        out.append(_paint(f"~ {_n(len(c['flaky']), 'flaky check')}: passing some attempts, no worse than chance; "
                           "not blocking", "yellow"))
         for p in c["flaky"][:10]:
             out.append(_paint(f"  {p['case_id']}  {_label(p['field'])}  "
@@ -2066,9 +2099,16 @@ def report(run_id: str, baseline: Optional[str], result: dict, repeat: int, code
     if passed and nj:
         out.append(_paint(f"Inconclusive: nothing got worse, but {_n(len(nj), 'result')} couldn't be judged. "
                           "Fix or rerun the evaluation; the baseline stays as it was.", "yellow"))
+    elif passed and c["unsure"]:
+        out.append(_paint(f"Inconclusive: nothing is proven worse, but {_n(len(c['unsure']), 'check')} could be. "
+                          "Rerun with more attempts; the baseline stays as it was.", "yellow"))
     else:
+        kept = len(dropped(result)) if passed and baseline else 0
         out.append(_paint("Passed." if passed else "Failed.", "green" if passed else "red") +
-                   (" Its cases' results are now their baseline." if passed else ""))
+                   (" Its cases' results are now their baseline" + (
+                       f", except {_n(kept, 'case')} whose pass rate dropped within chance: "
+                       f"{'it keeps its' if kept == 1 else 'they keep their'} old one." if kept else ".")
+                    if passed else ""))
     return "\n".join(out), passed
 
 
@@ -2206,10 +2246,13 @@ def finish(root: Path, cfg: dict, run_id: str, repeat: int, codes: List[int], ba
                               f"baseline: the same commit ({same['commit']}), no uncommitted changes, the same "
                               f"{CONFIG} and the same prompt versions. The model underneath changed, or a service a "
                               f"tool calls did.", "yellow")
-    inconclusive = passed and bool(result["not_judged"])
+    inconclusive = passed and bool(result["not_judged"] or result["summary"]["buckets"]["needs reruns"])
     baseline_before = dict(state.get("baseline_cases") or {})
     if passed and not inconclusive:
-        state["baseline_cases"] = {**(state.get("baseline_cases") or {}), **{c: run_id for c in promote(engine, run_id)}}
+        # A pass rate that dropped within chance passes, but isn't the new bar: otherwise a few such runs
+        # in a row would walk a case from 8/8 down to 4/8 without ever failing.
+        state["baseline_cases"] = {**(state.get("baseline_cases") or {}),
+                                   **{c: run_id for c in promote(engine, run_id, keep=dropped(result))}}
     code = 1 if not passed else 3 if inconclusive else 0
     policy = cfg.get("policy")
     if policy_lines(policy):

@@ -35,7 +35,8 @@ Failed.
 
 Plain `pytest` works too: red or green, with Assay's checks. `--assay` adds the comparison
 with each test's last passing run, and decides the exit code: 0 nothing got worse, 1 a
-regression, 6 inconclusive (nothing got worse, but some results couldn't be judged). A test
+regression, 6 inconclusive (nothing got worse, but some results couldn't be judged, or some
+checks could be worse and need more attempts to tell). A test
 that failed in its baseline too doesn't fail the session; a failing test that doesn't take
 the fixture does, as always. It works with `pytest -n` (xdist) and `-k`: running a subset only
 moves the baselines of the tests it ran. `--assay-baseline RUN` compares with one run instead,
@@ -79,13 +80,21 @@ SDK), and adds `--repeat N` for flaky cases and `--junit report.xml` for CI. Its
   a baseline, and running a subset (`assay test -- pytest tests/ai/test_security.py`) only
   moves the baselines of the cases it ran. If your suite has known failures, `assay accept`
   makes the latest run their baseline, and acknowledges its failures for two weeks
-  ([below](#acknowledging-a-failure)): later runs fail only on what got worse.
+  ([below](#acknowledging-a-failure)): later runs fail only on what got worse. A case whose pass
+  rate dropped within chance passes but keeps its old baseline, so a few noisy runs in a row
+  can't walk it from 8/8 down to 4/8.
 - **Report:** with pytest, the report opens with each test file (`✗ tests/ai/test_tools.py
   9/10`), then each check. `assay test --junit report.xml` writes JUnit XML for CI: a
   regression is a failure, a known failure is skipped, and a flaky test passes.
-- **Flakiness:** `repeat = 3` (or `assay test --repeat 3`) runs each case several times. A
-  check that varied the same way before is reported as flaky and doesn't block. A drop that
-  could be chance says so.
+- **Flakiness:** `repeat = 3` (or `assay test --repeat 3`) runs each case several times, and
+  each check is judged by its pass rate against its baseline's, corrected for how many checks
+  there are. 8/8 → 7/8 is what an unchanged agent does: flaky, not blocking. A drop that could be
+  real but can't be told yet (8/8 → 4/8 on one of five tasks) is inconclusive, exit 3, with the
+  number of attempts that would settle it. A drop beyond chance, or a check that passed every
+  attempt before and fails every one now (three or more each), is a regression, exit 1. A drop
+  that follows the model a call was routed to is a regression too, however few the attempts.
+  With one attempt there's nothing to tell chance by: a pass that became a failure is a
+  regression.
 - **Where things live:** everything goes in `.assay/` (recordings, the store, the baseline),
   which ignores itself in git. `assay test -- pytest -q tests/ai` overrides the command.
 

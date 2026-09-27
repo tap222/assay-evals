@@ -219,7 +219,8 @@ def compute(engine, tenant: str, current: str, baseline: str, cfg: dict, source=
             "scenarios": s["cases"],
             "counts": {"unchanged": unchanged, "improved": len(improved), "regressed": len(b["regressed"]),
                        "flaky": len(b["flaky"]), "changed": len(changed), "new_failures": len(b["new failure"]),
-                       "not_judged": len(b["couldn't be judged"]), "known_failures": len(b["known failure"]),
+                       "not_judged": len(b["couldn't be judged"]), "needs_reruns": len(b["needs reruns"]),
+                       "known_failures": len(b["known failure"]),
                        "acknowledged": len(b.get("acknowledged") or []), "judge_changed": len(b.get("judge changed") or [])},
             "regressions": regressions, "new_failures": [entry(c) for c in b["new failure"]],
             "changed": changed, "flaky": flaky, "improved": [local._short(c) for c in sorted(improved)],
@@ -273,6 +274,7 @@ def text(d: dict) -> str:
                                  (k["changed"], "~", "changed, still passing", "yellow"),
                                  (k["regressed"], "✗", "regressed", "red"), (k["new_failures"], "✗", "new failing", "red"),
                                  (k["flaky"], "⚠", "flaky", "yellow"), (k["not_judged"], "?", "couldn't be judged", "yellow"),
+                                 (k.get("needs_reruns", 0), "?", "could be worse, or chance: needs reruns", "yellow"),
                                  (k["known_failures"], "·", "failing before too", "dim"),
                                  (k.get("acknowledged", 0), "·", "acknowledged, quiet until worse", "dim"),
                                  (k.get("judge_changed", 0), "?", "judged by a new judge, not compared", "yellow")):
@@ -330,7 +332,8 @@ def markdown(d: dict) -> str:
     out.append(" · ".join(f"{n} {w}" for n, w in ((k["unchanged"], "unchanged"), (k["improved"], "improved"),
                                                    (k["changed"], "changed, still passing"),
                                                    (k["regressed"], "regressed"), (k["new_failures"], "new failing"),
-                                                   (k["flaky"], "flaky"), (k["not_judged"], "couldn't be judged"))
+                                                   (k["flaky"], "flaky"), (k["not_judged"], "couldn't be judged"),
+                                                   (k.get("needs_reruns", 0), "need reruns"))
                           if n or w in ("unchanged", "regressed")))
     for title, items in (("Regressions", d["regressions"]), ("New failing", d["new_failures"]),
                          ("Changed, still passing", d["changed"])):
