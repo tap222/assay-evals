@@ -531,3 +531,27 @@ def test_values_a_later_document_replaced_and_whether_output_followed(project, m
     assert reason == "output holds the old value ('1234.56'); inv-17-corrected replaces it with '1,200.00'"
     assert {x["id"]: x["status"] for x in coverage.compute(EventsSource(engine, "t"), w)["measures"]}[
         "superseded_value_rate"] == "live"
+
+
+def test_field_accuracy_counts_fields_only(project):
+    """Types, pages, tables, splits and locations are checks of their own, not fields at 0%."""
+    (project / "tests").mkdir()
+    (project / "tests" / "test_mixed.py").write_text('''
+from assay_sdk.documents import score_document, classify_document, score_ocr, score_table, score_locations, Text
+
+def test_doc(assay_case):
+    score_document(assay_case, {"number": "1"}, {"number": "1"}, {"number": Text()})
+    classify_document(assay_case, "invoice", "invoice")
+    score_ocr(assay_case, "a page", "a page")
+    score_table(assay_case, [["A"], ["x"]], [["A"], ["x"]])
+    score_locations(assay_case, {"number": {"bbox": [0, 0, 1, 1]}}, {"number": {"bbox": [0, 0, 1, 1]}})
+''')
+    assert run(project).returncode == 0
+    from assay import store
+    from assay.measures.ground_truth import FieldAccuracy
+    from assay.models import Window
+    from assay.sources.events import EventsSource
+    now = datetime.utcnow()
+    m = FieldAccuracy().compute(EventsSource(store.make_engine(f"sqlite:///{project / '.assay' / 'assay.db'}"), "local"),
+                                Window(now - timedelta(days=1), now + timedelta(days=1)))
+    assert m.overall.value == 1.0 and {r.slice_value for r in m.results if r.dimension == "field"} == {"number"}

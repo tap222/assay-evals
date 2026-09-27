@@ -130,8 +130,8 @@ class EventsSource:
                 raw = json.loads(r.raw_output or "{}")
             except ValueError:
                 raw = {}
-            if raw.get("part_of"):
-                continue
+            if raw.get("part_of") or raw.get("kind") not in ("correct", "wrong", "missing", "invented"):
+                continue  # a line-item column (its table counts it), or not a field: a type, a page, a table
             out.append({"document_id": r.document_id or r.case_id, "document_type": r.document_type,
                         "segment": r.segment, "field": r.field, "weight": float(raw.get("weight") or 1.0),
                         "share": float(raw.get("share", 1.0 if raw.get("kind") == "correct" else 0.0))})

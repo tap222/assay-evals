@@ -31,6 +31,7 @@ All of it is generated. Nothing here is real pipeline data.
 """
 from __future__ import annotations
 
+import json
 import random
 from datetime import datetime, timedelta
 from typing import List
@@ -317,6 +318,8 @@ def seed(engine: Engine, days: int = 56, docs_per_day: int = 120, seed_value: in
                                           author="ml-team" if note else None)
                               for pid, versions in PROMPTS.values() for ver, _, text, note in versions], TENANT)
 
+    scored = seed_document_scores(engine, docs, now)
+
     # Backfill one run per day over a rolling window, oldest first, so alerts
     # open and resolve in the order they would have live.
     source = EventsSource(engine, TENANT)
@@ -333,7 +336,7 @@ def seed(engine: Engine, days: int = 56, docs_per_day: int = 120, seed_value: in
         resolved_n = len(conn.execute(select(a.c.id).where((a.c.source == SOURCE) & (a.c.state == "resolved"))).all())
     return {"documents": len(docs), "calls": len(calls), "stage_runs": len(runs), "reviews": len(reviews),
             "errors": len(errors),
-            "runs": len(run_ids), "eval_results": evals, "agent_trajectories": agent["trajectories"],
+            "runs": len(run_ids), "eval_results": evals, "document_checks": scored, "agent_trajectories": agent["trajectories"],
             "alerts_open": open_n, "alerts_resolved": resolved_n}
 
 
@@ -751,3 +754,156 @@ def _agent_production(engine: Engine, now: datetime, tasks: List[str], per_day: 
         if feedback:
             conn.execute(store.trace_feedback.insert(), feedback)
     return len(heads)
+
+
+# ---------- document scoring: what assay_sdk.documents records, on a sample of the documents ----------
+
+SCORED_SHARE = 0.12  # of the day's documents, the share a person labelled for scoring
+SCORING_EVALUATORS = ("assay.documents@1", "assay.spotcheck@1", "assay.superseded@1")
+DATE_FIX_DAYS = 6  # extract_fields v13: "Accept European day-first dates"
+TYPE_FIX_DAYS = 14  # classify_document v8: fewer contract/claim mix-ups
+EUROPEAN = {"Contoso Insurance", "Umbrella Legal"}
+
+
+class _Collect:
+    """Stands in for a test case's run: keeps the checks the scorers record."""
+
+    def __init__(self):
+        self.checks = []
+
+    def check(self, field, status, **kw):
+        self.checks.append({"field": field, "status": status, **kw})
+
+
+def _row(doc: dict, c: dict, run_id: str, case: str, ts: datetime, n: int) -> dict:
+    from assay import ingest
+    text = lambda v: None if v is None else v if isinstance(v, str) else json.dumps(v, default=str)
+    return {"tenant": TENANT, "result_id": ingest._derive(run_id, case, c["field"], str(n)), "run_id": run_id,
+            "case_id": case, "document_id": doc["document_id"], "field": c["field"], "status": c["status"],
+            "expected": text(c.get("expected")), "actual": text(c.get("actual")), "evaluator": c.get("evaluator"),
+            "score": c.get("score"), "reason": (c.get("reason") or None) and c["reason"][:2000], "ts": ts,
+            "attempt": 0, "raw_output": c.get("raw_output"), "category": c.get("category"),
+            "error_kind": c.get("error_kind")}
+
+
+def seed_document_scores(engine: Engine, docs: List[dict], now: datetime, seed_value: int = 29) -> int:
+    """A labelled sample of the demo's documents scored the way assay_sdk.documents does it: fields,
+    line items, types, splits, OCR, locations, tables, confidence, spot checks of published output
+    and superseded values, with the story the rest of the demo tells: day-first dates fixed by
+    extract_fields v13, totals mangled by the validation release, contract/claim mix-ups cut by
+    classify_document v8, two-column statements read out of order, and corrections for Globex
+    Logistics that never reached output."""
+    import assay_sdk
+    from assay_sdk import documents as dx
+    rng = random.Random(seed_value)
+    schema = {"reference": dx.Text(weight=3), "vendor": dx.Text(), "total": dx.Money(weight=3),
+              "date": dx.Date(day_first=True),
+              "line_items": dx.LineItems({"description": dx.Text(), "amount": dx.Money()}, key="description")}
+    rows: List[dict] = []
+    sent: List[tuple] = []  # checks the production-side calls (spot_check, superseded_values) send
+
+    def capture(test_run, case, status, **kw):
+        sent.append((case, {"status": status, **kw}))
+    real, assay_sdk.check = assay_sdk.check, capture
+    try:
+        for doc in docs:
+            globex_now = doc["segment"] == "Globex Logistics" and (now - doc["received_at"]).days < 5
+            if rng.random() >= (0.5 if globex_now else SCORED_SHARE) or doc["document_type"] is None:
+                continue  # half of Globex's latest are checked: their corrections went missing
+            age = (now - doc["received_at"]).total_seconds() / 86400
+            itype, seg, did = doc["document_type"], doc["segment"], doc["document_id"]
+            truth = _truth(rng, doc["received_at"], itype)
+            items = _items(rng, truth["total"])
+            truth["line_items"] = items
+            got = {**truth, "line_items": [dict(x) for x in items]}
+            conf = {k: round(rng.uniform(0.9, 0.995), 3) for k in ("reference", "vendor", "total", "date")}
+            d = datetime.strptime(truth["date"], "%Y-%m-%d")
+            if seg in EUROPEAN and age >= DATE_FIX_DAYS and d.day <= 12 and d.day != d.month and rng.random() < 0.6:
+                got["date"] = d.replace(month=d.day, day=d.month).strftime("%Y-%m-%d")  # read month first
+                conf["date"] = round(rng.uniform(0.9, 0.99), 3)  # and sure of it
+            if age < RELEASE_BUG_DAYS and rng.random() < 0.35:  # validation v2.4 moves the decimal point
+                got["total"] = f"{float(truth['total'].replace(',', '')) * 100:,.2f}"
+                conf["total"] = round(rng.uniform(0.93, 0.99), 3)
+            if rng.random() < 0.03:
+                got["vendor"] = rng.choice(VENDORS)
+                conf["vendor"] = round(rng.uniform(0.5, 0.8), 3)
+            if rng.random() < 0.02:
+                got["reference"] = ""
+            if rng.random() < 0.06 and got["line_items"]:
+                got["line_items"][-1]["amount"] = f"{float(got['line_items'][-1]['amount']) + 1:.2f}"
+            run = _Collect()
+            dx.score_document(run, truth, got, schema, rules=[dx.total_of("line_items.amount", equals="total")],
+                              confidence=conf)
+            mixups = {"contract": "insurance_claim", "insurance_claim": "contract"}
+            wrong_type = itype in mixups and rng.random() < (0.12 if age >= TYPE_FIX_DAYS else 0.03)
+            dx.classify_document(run, itype, mixups[itype] if wrong_type else itype,
+                                 confidence=round(rng.uniform(0.85, 0.99), 3))
+            pages = doc["page_count"] or 1
+            text = _text(truth, itype, pages)
+            lines = [text[i:i + 40] for i in range(0, len(text), 40)]
+            read = list(lines)
+            if itype == "bank_statement" and rng.random() < 0.5:  # two columns, read across
+                half = len(read) // 2
+                read = [x for pair in zip(read[:half], read[half:]) for x in pair] + read[2 * half:]
+            if rng.random() < 0.3:
+                k = rng.randrange(len(read))
+                read[k] = read[k].replace("0", "O", 1).replace("l", "1", 1)
+            dx.score_ocr(run, "\n".join(lines), "\n".join(read), page=1, max_cer=0.05)
+            box = [100, 700, 220, 716]
+            moved = rng.random() < 0.08
+            dx.score_locations(run, {"total": {"page": 1, "bbox": box}},
+                               {"total": {"page": 2 if moved and pages > 1 else 1,
+                                          "bbox": [120, 640, 240, 656] if moved else [102, 699, 221, 717]}})
+            table = [["Description", "Amount"]] + [[x["description"], x["amount"]] for x in items]
+            read_table = [list(r) for r in table]
+            if rng.random() < 0.07:
+                read_table = [["Description Amount"]] + [[f"{a} {b}"] for a, b in table[1:]]  # columns merged
+            dx.score_table(run, table, read_table, name="line items", cells={"Amount": dx.Money()})
+            if itype == "bank_statement" and pages >= 3:  # a statement file holding two statements
+                cut = rng.randint(2, pages)
+                bad = rng.random() < (0.15 if age < 7 else 0.05)
+                dx.score_split(run, [1, cut], [1, cut + 1 if cut < pages else cut - 1] if bad else [1, cut],
+                               page_count=pages)
+            ts = doc["received_at"] + timedelta(minutes=5)
+            day = doc["document_id"].split("-")[1]
+            rows += [_row(doc, c, f"demo-scoring-{day}", did, ts, n) for n, c in enumerate(run.checks)]
+            # Production side: a person re-checks some published values; corrections arrive for some.
+            if rng.random() < 0.4:
+                auto = rng.random() < 0.6
+                escaped = got["total"] != truth["total"] and (auto or rng.random() < 0.2)
+                dx.spot_check(did, "total", got["total"] if escaped else truth["total"], truth["total"], dx.Money(),
+                              reviewed=not auto, auto_approved=auto, checked_by=f"auditor-{rng.randint(1, 3)}")
+                if rng.random() < 0.05:
+                    dx.spot_check(did, "vendor", rng.choice(VENDORS) if auto and rng.random() < 0.3 else truth["vendor"],
+                                  truth["vendor"],
+                                  reviewed=not auto, auto_approved=auto)
+            if rng.random() < (0.8 if globex_now else 0.2):  # a corrected version of the document arrived later
+                new = {**truth, "total": f"{float(truth['total'].replace(',', '')) * 0.9:,.2f}"}
+                stuck = seg == "Globex Logistics" and age < 5
+                output = truth if stuck or rng.random() < 0.05 else new
+                dx.superseded_values(did, f"{did}-corrected", truth, new, output,
+                                     flagged=["total"] if not stuck and rng.random() < 0.3 else (),
+                                     schema={"total": dx.Money()}, link=rng.choice(["replaces", "amends"]))
+            for n, (case, c) in enumerate(sent):
+                run_id = "spot-checks" if c.get("evaluator") == "assay.spotcheck@1" else "superseded"
+                rows.append(_row(doc, c, run_id, case, ts + timedelta(days=1), 100 + n))
+            sent.clear()
+    finally:
+        assay_sdk.check = real
+    with engine.begin() as conn:
+        t = store.eval_results
+        conn.execute(delete(t).where((t.c.tenant == TENANT) & t.c.evaluator.in_(SCORING_EVALUATORS)))
+        for i in range(0, len(rows), 2000):
+            conn.execute(t.insert(), rows[i:i + 2000])
+    return len(rows)
+
+
+def _items(rng, total: str) -> List[dict]:
+    """Line items that add up to the total."""
+    amount = float(total.replace(",", ""))
+    n = rng.randint(1, 4)
+    cuts = sorted(round(rng.uniform(0.1, 0.9) * amount, 2) for _ in range(n - 1))
+    parts = [b - a for a, b in zip([0.0] + cuts, cuts + [amount])]
+    names = ["Freight", "Handling", "Consulting", "Licence", "Storage", "Parts"]
+    rng.shuffle(names)
+    return [{"description": names[i], "amount": f"{p:.2f}"} for i, p in enumerate(parts)]
