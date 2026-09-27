@@ -377,3 +377,116 @@ def test_ocr_and_grounding_in_the_report(project):
     assert "Locations    1 field · right page and box 1/1 (100%) · mean overlap 1.00" in out.stdout
     assert "not in the document's text: total '1284.56'" in out.stdout  # no labels needed to catch it
     assert "OCR characters wrong 2.2%, was 0%" in (project / ".assay" / "summary.md").read_text()
+
+
+# ---------- reading order, tables, spot checks, and the dashboard ----------
+
+from assay_sdk.documents import score_table, spot_check  # noqa: E402
+
+TWO_COLUMNS = ["Left one", "Left two", "Left three", "Right one", "Right two", "Right three"]
+
+
+def test_reading_order_is_scored_apart_from_the_text():
+    across = "\n".join(TWO_COLUMNS[i] for i in (0, 3, 1, 4, 2, 5))  # a two-column page read across
+    s = score_ocr(None, "\n".join(TWO_COLUMNS), across)
+    assert s.cer > 0.5 and round(s.order, 2) == 0.67 and s.order_free_cer == 0  # read right, out of order
+    typo = score_ocr(None, "\n".join(TWO_COLUMNS), across.replace("three", "thr3e"))
+    assert 0 < typo.order_free_cer < 0.05  # the typos, and only those
+    assert score_ocr(None, "\n".join(TWO_COLUMNS), "\n".join(TWO_COLUMNS)).order == 1.0
+    r = Recorder()
+    score_ocr(r, "\n".join(TWO_COLUMNS), across, max_cer=1.0, min_order=0.9)
+    assert r.checks[0]["status"] == "fail" and r.checks[0]["reason"] == "67% of lines in reading order"
+
+
+TABLE = [["Item", "Qty", "Amount"], ["Widget", "2", "10.00"], ["Bolt", "5", "2.50"]]
+
+
+def test_a_table_says_what_happened_to_its_structure():
+    assert score_table(None, TABLE, TABLE).correct
+    moved = score_table(None, TABLE, [["Amount", "Item", "Qty"], ["2.50", "Bolt", "5"], ["10.00", "Widget", "2"]],
+                        cells={"Amount": Money()})
+    assert moved.correct and moved.f1 == 1.0  # columns and rows in another order: the same table
+    merged = score_table(None, TABLE, [["Item Qty", "Amount"], ["Widget 2", "10.00"], ["Bolt 5", "2.50"]])
+    assert merged.notes == ["columns 'Item' and 'Qty' merged into one"] and not merged.shape_right
+    assert round(merged.recall, 2) == 0.33 and merged.precision == 0.5
+    lost = score_table(None, TABLE, TABLE[:2])
+    assert lost.notes == ["1 row(s) missing"] and lost.recall == 0.5 and lost.precision == 1.0
+    garbled = score_table(None, TABLE, [TABLE[0], TABLE[1], ["Bolt", "5", "25.0"]], cells={"Amount": Money()})
+    assert garbled.notes == ["1 cell(s) wrong, e.g. Amount in row 2: '25.0', not '2.50'"] and garbled.shape_right
+    extra = score_table(None, TABLE, [r + ["x"] for r in TABLE])
+    assert extra.notes == ["a column that isn't there: 'x'"]
+    assert score_table(None, [["a", "b"], ["c", "d"]], [["a", "b", "x"], ["c", "d", "y"]], header=False).notes == \
+        ["3 columns, not 2"]
+
+
+def test_spot_checks_of_published_output_give_the_escape_rate(project, monkeypatch):
+    import assay_sdk as assay
+    from assay import local, store
+    from assay.measures.ground_truth import EscapeRate
+    from assay.models import Window
+    from assay.sources.events import EventsSource
+    path = project / "spot.jsonl"
+    monkeypatch.setenv("ASSAY_PATH", str(path))
+    assay.init()
+    assert spot_check("doc-1", "total", "1,234.56", "1234.56", Money(), reviewed=True)
+    assert not spot_check("doc-2", "total", "1,284.56", "1234.56", Money(), auto_approved=True, checked_by="sam")
+    assert spot_check("doc-3", "vendor", "ACME", "Acme", auto_approved=True)
+    assert not spot_check("doc-4", "iban", None, "DE89 3704", auto_approved=True)
+    assay.shutdown()
+    engine = store.make_engine("sqlite://")
+    store.metadata.create_all(engine)
+    assert local.load_file(engine, str(path), "t")[1] == []
+    now = datetime.utcnow()
+    m = EscapeRate().compute(EventsSource(engine, "t"), Window(now - timedelta(days=1), now + timedelta(days=1)))
+    assert m.status == "measured" and m.overall.value == 0.5 and m.overall.n == 4
+    by_path = {r.slice_value: r.value for r in m.results if r.dimension == "path"}
+    assert by_path == {"auto-approved": 2 / 3, "reviewed": 0.0}  # auto-approval lets more through
+
+
+DASH = '''
+import os
+from assay_sdk.documents import score_ocr, score_locations, score_table
+
+after = os.environ.get("MODE") == "after"
+PAGE = "Left one\\nLeft two\\nRight one\\nRight two"
+TABLE = [["Item", "Amount"], ["Widget", "10.00"], ["Bolt", "2.50"]]
+
+def test_page(assay_case):
+    read = "Left one\\nRight one\\nLeft two\\nRight two" if after else PAGE   # the PR reads across the columns
+    score_ocr(assay_case, PAGE, read, page=1, max_cer=1.0)
+    score_locations(assay_case, {"total": {"page": 1, "bbox": [0, 0, 10, 10]}},
+                    {"total": {"page": 2 if after else 1, "bbox": [0, 0, 10, 10]}})
+    score_table(assay_case, TABLE, [["Item Amount"], ["Widget 10.00"], ["Bolt 2.50"]] if after else TABLE,
+                name="items")
+'''
+
+
+def test_dashboard_measures_and_the_report(project):
+    from assay import coverage, store
+    from assay.measures import REGISTRY
+    from assay.models import Window
+    from assay.sources.events import EventsSource
+    (project / "tests").mkdir()
+    (project / "tests" / "test_page.py").write_text(DASH)
+    assert run(project).returncode == 0
+    out = run(project, env={"MODE": "after"})
+    assert out.returncode == 1
+    # [1, 3, 2, 4]: three of the four lines keep the page's order
+    assert "reading order 75.0% of lines (was 100%) · with them put back in order, characters wrong 0%" in out.stdout
+    assert "e.g. 'Right one' for ''" not in out.stdout  # only moved: no misleading example
+    assert "Tables       1 · right 0/1 (0%, was 100%) · structure right 0/1 · cells right: F1 0% (was 100%)" \
+        in out.stdout
+    assert "items (tests/test_page.py::test_page): columns 'Item' and 'Amount' merged into one" in out.stdout
+    assert "row(s) missing" not in out.stdout  # rows matched by place when no column matches
+    engine = store.make_engine(f"sqlite:///{project / '.assay' / 'assay.db'}")
+    src, now = EventsSource(engine, "local"), datetime.utcnow()
+    w = Window(now - timedelta(days=1), now + timedelta(days=1))
+    got = {mid: REGISTRY[mid].compute(src, w) for mid in ("ocr_cer", "ocr_digit_error_rate", "ocr_reading_order",
+                                                           "location_accuracy", "table_cell_f1")}
+    assert all(m.status == "measured" for m in got.values())
+    assert got["ocr_reading_order"].overall.value == 0.875  # 100% then 75%, the same page twice
+    assert got["location_accuracy"].overall.value == 0.5 and got["table_cell_f1"].overall.n == 2
+    assert {r.slice_value for r in got["location_accuracy"].results if r.dimension == "field"} == {"total"}
+    live = {m["id"]: m for m in coverage.compute(src, w)["measures"]}
+    assert live["ocr_cer"]["status"] == "live" and live["escape_rate"]["status"] == "blocked"
+    assert live["escape_rate"]["missing"] == ["spot checks of published output (spot_check)"]

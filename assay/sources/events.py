@@ -137,6 +137,35 @@ class EventsSource:
                         "share": float(raw.get("share", 1.0 if raw.get("kind") == "correct" else 0.0))})
         return out
 
+    def document_checks(self, window: Window, kind: str, evaluator: str = "assay.documents@1") -> Optional[List[dict]]:
+        """Checks of one kind recorded by assay_sdk.documents ("ocr", "location", "table",
+        "spot_check"), with their counts and their document's type and segment: {"document_id",
+        "document_type", "segment", "field", "passed", "raw"}. None if this tenant has never sent one
+        of that kind; copies of passing runs kept as the baseline are left out."""
+        import json
+        from assay.local import BASELINE
+        t, d = store.eval_results, store.event_documents
+        cond = [t.c.tenant == self.tenant, t.c.evaluator == evaluator, t.c.raw_output.like(f'%"kind": "{kind}"%')]
+        with self.engine.connect() as conn:
+            if conn.execute(select(t.c.result_id).where(and_(*cond)).limit(1)).first() is None:
+                return None
+            cond += [t.c.status.in_(("pass", "fail")), t.c.run_id != BASELINE]
+            if window is not None:
+                cond += [t.c.ts >= window.start, t.c.ts < window.end]
+            rows = conn.execute(select(t.c.document_id, t.c.case_id, t.c.field, t.c.status, t.c.raw_output,
+                                       d.c.document_type, d.c.segment).select_from(t.outerjoin(
+                d, and_(d.c.tenant == t.c.tenant, d.c.document_id == t.c.document_id))).where(and_(*cond))).all()
+        out = []
+        for r in rows:
+            try:
+                raw = json.loads(r.raw_output or "{}")
+            except ValueError:
+                continue
+            if raw.get("kind") == kind:
+                out.append({"document_id": r.document_id or r.case_id, "document_type": r.document_type,
+                            "segment": r.segment, "field": r.field, "passed": r.status == "pass", "raw": raw})
+        return out
+
     def split_scores(self, window: Window) -> Optional[List[dict]]:
         """Files split into documents, scored against their correct boundaries (assay_sdk.documents.
         score_split): {"document_id", "segment", "document_type", "documents", "right"}. None if this

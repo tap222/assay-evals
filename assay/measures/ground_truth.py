@@ -88,9 +88,23 @@ class SupersededValues(_AwaitingTruth):
 
 
 class EscapeRate(_AwaitingTruth):
+    """From spot checks of published output (assay_sdk.documents.spot_check): the share of values
+    checked that were wrong. Everything published has cleared automation and, where it applied,
+    review; `path` says which way each went out (reviewed, or auto-approved), so the slices say
+    which one lets more through. A sample: its n says how far to trust it."""
     id = "escape_rate"
     name = "Escape rate"
     question = "How often does a wrong value clear both automation and human review?"
     higher_is_better = False
-    dimensions = ("segment",)
-    waiting_on = "a re-verified spot-check sample of published output."
+    dimensions = ("segment", "document_type", "path", "field")
+    waiting_on = "a re-verified spot-check sample of published output (assay_sdk.documents.spot_check)."
+
+    def compute(self, source, window: Window) -> MeasureOutput:
+        rows = source.document_checks(window, "spot_check", "assay.spotcheck@1") \
+            if hasattr(source, "document_checks") else None
+        if rows is None:
+            return super().compute(source, window)
+        for r in rows:
+            r["path"] = r["raw"].get("path")
+        from assay.measures.documents import _slices
+        return _slices(self.id, rows, self.dimensions, lambda g: (sum(not r["passed"] for r in g), len(g)))

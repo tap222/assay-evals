@@ -41,6 +41,8 @@ def summarize(rows: List) -> Optional[dict]:
     confusion: Dict[tuple, int] = defaultdict(int)
     split, ocr, where = defaultdict(int), defaultdict(int), defaultdict(float)
     worst_pages, ious = [], []
+    tables = defaultdict(int)
+    table_notes = []
     for r in mine:
         raw = _raw(r)
         kind = raw.get("kind")
@@ -51,8 +53,22 @@ def summarize(rows: List) -> Optional[dict]:
                 ocr[k] += int(raw.get(k) or 0)
             ocr["pages"] += 1
             ocr["failed"] += r.status == "fail"
+            if raw.get("order") is not None:
+                ocr["order_num"] += raw["order"] * (raw.get("chars") or 1)
+                ocr["order_den"] += raw.get("chars") or 1
+                ocr["free_errors"] += int(raw.get("order_free_errors") or 0)
+                ocr["free_chars"] += int(raw.get("chars") or 0)
             if raw.get("chars"):
                 worst_pages.append((raw["char_errors"] / raw["chars"], r.case_id, r.field, raw.get("worst") or []))
+            continue
+        if kind == "table":
+            tables["n"] += 1
+            tables["right"] += r.status == "pass"
+            tables["shape_right"] += bool(raw.get("shape_right"))
+            for k in ("cells", "cells_read", "cells_right"):
+                tables[k] += int(raw.get(k) or 0)
+            if r.status == "fail" and getattr(r, "reason", None):
+                table_notes.append(f"{r.field.split(': ', 1)[-1]} ({r.case_id}): {r.reason}")
             continue
         if kind == "location":
             where["n"] += 1
@@ -95,6 +111,11 @@ def summarize(rows: List) -> Optional[dict]:
             "accuracy": sum(acc) / len(acc) if acc else None, "fields": dict(sorted(out.items())),
             "rules": {k: {"held": v[0], "checked": v[1]} for k, v in sorted(rules.items())},
             "types": _types(confusion), "split": _split(split), "confidence": [list(x) for x in confident],
+            "tables": {"n": tables["n"], "right": tables["right"], "shape_right": tables["shape_right"],
+                       "precision": _ratio(tables["cells_right"], tables["cells_read"]),
+                       "recall": _ratio(tables["cells_right"], tables["cells"]),
+                       "f1": _ratio(2 * tables["cells_right"], tables["cells"] + tables["cells_read"]),
+                       "notes": table_notes[:3]} if tables["n"] else None,
             "ocr": _ocr(ocr, worst_pages), "locations": {"n": int(where["n"]), "right": int(where["right"]),
                                                           "wrong_page": int(where["wrong_page"]),
                                                           "mean_iou": sum(ious) / len(ious) if ious else None}
@@ -107,6 +128,8 @@ def _ocr(o: Dict[str, int], worst: list) -> Optional[dict]:
     return {"pages": o["pages"], "failed": o["failed"], "cer": _ratio(o["char_errors"], o["chars"]),
             "wer": _ratio(o["word_errors"], o["words"]), "digit_error_rate": _ratio(o["digit_errors"], o["digits"]),
             "digit_errors": o["digit_errors"],
+            "order": _ratio(o.get("order_num", 0), o.get("order_den", 0)),
+            "order_free_cer": _ratio(o.get("free_errors", 0), o.get("free_chars", 0)) if o.get("order_den") else None,
             "worst": [[c, case, field, lines] for c, case, field, lines in sorted(worst, key=lambda x: -x[0])[:3] if c]}
 
 
@@ -190,6 +213,14 @@ def lines(now: dict, before: Optional[dict] = None, cfg: Optional[dict] = None) 
     out += _split_lines(now.get("split"), (before or {}).get("split"))
     out += _confidence_lines(now, before, cfg)
     out += _ocr_lines(now.get("ocr"), (before or {}).get("ocr"))
+    tb, btb = now.get("tables"), (before or {}).get("tables")
+    if tb:
+        share, was = _ratio(tb["right"], tb["n"]), _ratio(btb["right"], btb["n"]) if btb else None
+        out.append(f"Tables       {tb['n']} · right {tb['right']}/{tb['n']} ({_pct(share)}{_was(share, was)}) · "
+                   f"structure right {tb['shape_right']}/{tb['n']} · cells right: F1 {_pct(tb['f1'])}"
+                   f"{_paren_was(tb['f1'], (btb or {}).get('f1'))} · precision {_pct(tb['precision'])}, recall "
+                   f"{_pct(tb['recall'])}")
+        out += [f"             {n}" for n in tb["notes"][:2]]
     loc, bl = now.get("locations"), (before or {}).get("locations")
     if loc:
         share, was = _ratio(loc["right"], loc["n"]), _ratio(bl["right"], bl["n"]) if bl else None
@@ -208,6 +239,10 @@ def _ocr_lines(o: Optional[dict], b: Optional[dict]) -> List[str]:
         rate(k, label) for k, label in (("cer", "characters wrong"), ("wer", "words wrong"),
                                         ("digit_error_rate", "digits wrong")) if o[k] is not None)
            + (f" · {o['failed']} over the limit" if o["failed"] else "")]
+    if o.get("order") is not None and (o["order"] < 1 or (b and (b.get("order") or 1) < 1)):
+        out.append(f"             reading order {_pct(o['order'])} of lines" + _paren_was(o["order"], (b or {}).get("order"))
+                   + (f" · with them put back in order, characters wrong {_pct(o['order_free_cer'])}"
+                      if o.get("order_free_cer") is not None else ""))
     for c, case, field, lines in o["worst"][:2]:
         out.append(f"             {case} {field}: {_pct(c)}" + (f", e.g. {lines[0]}" if lines else ""))
     return out
@@ -238,6 +273,10 @@ def _field_lines(now: dict, before: Optional[dict]) -> List[str]:
 
 def _was(now: Optional[float], was: Optional[float]) -> str:
     return f", was {_pct(was)}" if was is not None and now is not None and abs(was - now) >= 0.0005 else ""
+
+
+def _paren_was(now: Optional[float], was: Optional[float]) -> str:
+    return f" (was {_pct(was)})" if was is not None and now is not None and abs(was - now) >= 0.0005 else ""
 
 
 def _type_lines(t: Optional[dict], b: Optional[dict]) -> List[str]:

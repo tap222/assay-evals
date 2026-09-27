@@ -182,6 +182,52 @@ OCR          1 page · characters wrong 2.2% (was 0%) · words wrong 11.1% (was 
              tests/test_pages.py::test_page ocr page 1: 2.2%, e.g. 'Total: 1,284.56 EUR' for 'Total: 1,234.56 EUR'
 ```
 
+**Reading order** is scored apart from the text. Each line read is matched to the page's line it
+is, and the order score is the share of lines in the longest run that keeps the page's order: a
+two-column page read across the columns scores low. With the lines put back in order, the
+character error rate says what the reading got wrong, order aside, so text read right in the
+wrong order isn't counted as text read wrong. `min_order=0.9` fails a page read out of order.
+
+```
+OCR          1 page · characters wrong 52.9% (was 0%) · words wrong 50.0% (was 0%)
+             reading order 75.0% of lines (was 100%) · with them put back in order, characters wrong 0%
+```
+
+## Tables: structure as well as cells
+
+```python
+from assay_sdk.documents import score_table, Money
+
+score_table(assay_case, expected=[["Item", "Qty", "Amount"], ["Widget", "2", "10.00"], ["Bolt", "5", "2.50"]],
+            extracted=pipeline.tables[0], name="items", cells={"Amount": Money()})
+```
+
+A check per table, `table: items`. With `header` (the default) the first row names the columns,
+and columns are matched by name, so columns and rows in another order are the same table. It
+says what happened to the structure: a column missing, one that isn't there, two merged into one
+("columns 'Item' and 'Qty' merged into one"), rows missing or made up, and the cells that are
+wrong. The cells score is one number, the F1 of the cells right over the correct table's and
+those read: a lost column and a garbled cell both lower it. `cells` is the type of every cell, or
+per column.
+
+## Spot checks: what reached published output
+
+The **escape rate** is how often a wrong value got past automation and review into published
+output. Only checking published values afterwards can say: sample some, have a person verify
+them, and send each:
+
+```python
+from assay_sdk.documents import spot_check, Money
+
+spot_check("doc-2", "total", published="1,284.56", correct="1234.56", spec=Money(),
+           auto_approved=True, checked_by="sam")
+```
+
+Each is a check of the run `spot-checks` against the production document. The dashboard's
+**Escape rate** is the share checked that were wrong, by segment, document type, field, and the
+way it went out (`reviewed` or `auto-approved`), so it says which of the two lets more through.
+It's a sample: its n says how far to trust it.
+
 ## Where on the page a value was read
 
 ```python
@@ -228,9 +274,19 @@ lowest recall.
 
 ## On the dashboard
 
-The **Severity-weighted field accuracy** measure (`field_accuracy`) is computed from the same
-checks once they reach the server (`assay test --upload`, or `pytest --assay --assay-upload`):
-overall, and by document type, segment and field, with the usual expected range and alerts
-([Measures](measures.md)). A document's type is its run's task: record the pipeline's runs as
+Once the checks reach the server (`assay test --upload`, or `pytest --assay --assay-upload`, or
+sent by the pipeline itself), these are measured over time, overall and by document type and
+segment, with the usual expected range and alerts ([Measures](measures.md)):
+
+| Measure | From |
+|---|---|
+| Severity-weighted field accuracy (`field_accuracy`), also by field | `score_document` |
+| Document splitting straight-through (`split_stp`) | `score_split` |
+| OCR characters wrong (`ocr_cer`), OCR digits wrong (`ocr_digit_error_rate`), OCR reading order (`ocr_reading_order`) | `score_ocr` |
+| Fields read from the right place (`location_accuracy`), also by field | `score_locations` |
+| Table cells right (`table_cell_f1`) | `score_table` |
+| Escape rate (`escape_rate`), also by the way a value went out | `spot_check` |
+
+Each is unmeasured until its first check arrives, and `GET /v1/coverage` says which call it's waiting on. A document's type is its run's task: record the pipeline's runs as
 `assay.run("invoice", ...)` for the slices to be document types. Under the `assay_case` fixture
 the task is the test's name.

@@ -56,7 +56,17 @@ IMPROVES: Dict[str, List[tuple]] = {
     "errors_by_origin": [("stage_runs", "sequence", "order steps exactly instead of by start time")],
 }
 
-WAITING_ON_GROUND_TRUTH = {"split_stp", "field_accuracy", "superseded_value_rate", "escape_rate"}
+WAITING_ON_GROUND_TRUTH = {"superseded_value_rate"}
+# Measured from scored checks (assay_sdk.documents): live once the first one arrives.
+SCORED = {"field_accuracy": ("field_scores", (), "fields scored against their correct values (score_document)"),
+          "split_stp": ("split_scores", (), "files scored against their correct boundaries (score_split)"),
+          "escape_rate": ("document_checks", ("spot_check", "assay.spotcheck@1"),
+                          "spot checks of published output (spot_check)"),
+          "ocr_cer": ("document_checks", ("ocr",), "OCR text scored against the page (score_ocr)"),
+          "ocr_digit_error_rate": ("document_checks", ("ocr",), "OCR text scored against the page (score_ocr)"),
+          "ocr_reading_order": ("document_checks", ("ocr",), "OCR text scored against the page (score_ocr)"),
+          "location_accuracy": ("document_checks", ("location",), "field locations scored (score_locations)"),
+          "table_cell_f1": ("document_checks", ("table",), "tables scored against the correct ones (score_table)")}
 
 
 def _profile(records: Optional[list], cls) -> dict:
@@ -97,6 +107,12 @@ def compute(source, window: Window, rates: Optional[Dict[str, float]] = None) ->
         entry = {"id": mid, "name": m.name, "tag": m.tag, "missing": [], "improve": []}
         if mid in WAITING_ON_GROUND_TRUTH:
             entry.update(status="blocked", missing=["labelled ground truth (not ingestible yet)"])
+            measures.append(entry)
+            continue
+        if mid in SCORED:
+            method, args, what = SCORED[mid]
+            got = getattr(source, method)(window, *args) if hasattr(source, method) else None
+            entry.update(status="live" if got else "blocked", missing=[] if got else [what])
             measures.append(entry)
             continue
         entry["missing"] = [_label(r, f) for r, f in REQUIRES.get(mid, []) if not have(r, f)]

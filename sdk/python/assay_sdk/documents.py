@@ -40,13 +40,15 @@ from __future__ import annotations
 
 import json
 import re
+from collections import defaultdict
 from dataclasses import dataclass, field as dc_field
 from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 __all__ = ["Text", "Number", "Money", "Date", "LineItems", "score_document", "check_rules", "total_of",
            "before", "required", "rule", "DocumentScore", "FieldScore", "EVALUATOR", "classify_document",
-           "score_split", "SplitScore", "score_ocr", "OcrScore", "score_locations", "appears_in"]
+           "score_split", "SplitScore", "score_ocr", "OcrScore", "score_locations", "appears_in", "score_table",
+           "TableScore", "spot_check", "SPOT_CHECKS"]
 
 EVALUATOR = "assay.documents@1"
 CORRECT, WRONG, MISSING, INVENTED = "correct", "wrong", "missing", "invented"
@@ -668,6 +670,54 @@ def _bounded(a: Sequence, b: Sequence) -> int:
     return _edits(a, b) if len(a) * len(b) <= 4_000_000 else max(len(a), len(b))
 
 
+def _reading_order(ref: List[str], hyp: List[str]) -> Tuple[Optional[float], int]:
+    """Whether the lines were read in the page's order, apart from whether they were read right.
+    Each line read is matched to the page's line it is (the same text, else the most alike, if
+    it's at least 60% alike); the order score is the share of matched lines in the longest run
+    that keeps the page's order. Also the character edits with the lines put back in order: what
+    the reading got wrong, order aside."""
+    import bisect
+    import difflib
+    free = defaultdict(list)
+    for i, line in enumerate(ref):
+        free[line].append(i)
+    match, left = {}, []
+    for j, line in enumerate(hyp):
+        if free.get(line):
+            match[j] = free[line].pop(0)
+        else:
+            left.append(j)
+    unused = sorted(i for ids in free.values() for i in ids)
+    if left and unused and len(left) * len(unused) <= 40_000:
+        pairs = []
+        for j in left:
+            for i in unused:
+                m = difflib.SequenceMatcher(None, ref[i], hyp[j], autojunk=False)
+                if m.real_quick_ratio() >= 0.6 and m.quick_ratio() >= 0.6:
+                    r = m.ratio()
+                    if r >= 0.6:
+                        pairs.append((r, j, i))
+        taken_i, taken_j = set(), set()
+        for r, j, i in sorted(pairs, reverse=True):
+            if i not in taken_i and j not in taken_j:
+                match[j] = i
+                taken_i.add(i)
+                taken_j.add(j)
+    elif left and unused:  # far too many to compare: pair them by position
+        for j, i in zip(left, unused):
+            match[j] = i
+    order = [match[j] for j in sorted(match)]
+    tails: List[int] = []  # longest increasing run of page positions, in reading order
+    for x in order:
+        k = bisect.bisect_left(tails, x)
+        tails[k:k + 1] = [x]
+    score = len(tails) / len(order) if order else None
+    edits = sum(_bounded(ref[i], hyp[j]) for j, i in match.items())
+    edits += sum(len(ref[i]) for i in set(range(len(ref))) - set(match.values()))
+    edits += sum(len(hyp[j]) for j in set(range(len(hyp))) - set(match))
+    return score, edits
+
+
 @dataclass
 class OcrScore:
     chars: int
@@ -677,6 +727,12 @@ class OcrScore:
     digits: int
     digit_errors: int
     lines: List[Tuple[str, str]]  # (what the page says, what was read), where they differ
+    order: Optional[float] = None  # the share of lines read in the page's order
+    order_free_errors: int = 0  # character edits with the lines put back in the page's order
+
+    @property
+    def order_free_cer(self) -> float:
+        return self.order_free_errors / self.chars if self.chars else 0.0
 
     @property
     def cer(self) -> float:
@@ -692,12 +748,17 @@ class OcrScore:
 
 
 def score_ocr(run, expected: str, read: str, page: Optional[int] = None, max_cer: float = 0.05,
-              max_digit_errors: Optional[int] = None, case: bool = True) -> OcrScore:
+              max_digit_errors: Optional[int] = None, case: bool = True, min_order: Optional[float] = None) -> OcrScore:
     """Score OCR text against what the page says, recorded as the check `ocr` (`ocr page 3` with
     `page`): the character error rate (edits over the page's characters), the word error rate, and
     the digits on their own, since a wrong digit is a wrong amount. Spacing doesn't count; case
     does unless case=False. It fails over `max_cer`, or with more than `max_digit_errors` wrong
-    digits when that's given."""
+    digits when that's given.
+
+    Reading order is scored apart: the share of lines read in the page's order (a two-column page
+    read across the columns scores low), and the character error rate with the lines put back in
+    order, so text read right in the wrong order isn't counted as text read wrong. `min_order`
+    fails a page read out of order."""
     norm = lambda t: "\n".join(re.sub(r"[ \t]+", " ", ln).strip() for ln in str(t or "").splitlines() if ln.strip())
     ref, hyp = norm(expected), norm(read)
     if not case:
@@ -707,19 +768,27 @@ def score_ocr(run, expected: str, read: str, page: Optional[int] = None, max_cer
     char_errors = sum(_bounded(x.replace("\n", ""), y.replace("\n", "")) for x, y in lines)
     word_errors = sum(_bounded(x.split(), y.split()) for x, y in lines)
     digit_errors = sum(_bounded(digits(x), digits(y)) for x, y in lines)
+    order, free_errors = _reading_order(ref.split("\n"), hyp.split("\n")) if lines else (1.0 if ref else None, 0)
     score = OcrScore(len(ref.replace("\n", "")), char_errors, len(ref.split()), word_errors, len(digits(ref)),
-                     digit_errors, lines)
+                     digit_errors, lines, order, free_errors)
     if run is not None:
-        bad = score.cer > max_cer or (max_digit_errors is not None and digit_errors > max_digit_errors)
-        worst = [f"{y!r} for {x!r}" for x, y in lines[:3]]
+        out_of_order = min_order is not None and order is not None and order < min_order
+        bad = score.cer > max_cer or (max_digit_errors is not None and digit_errors > max_digit_errors) or out_of_order
+        # Out of order but read right: the lines "changed" are only moved, and no example of them helps.
+        worst = [] if free_errors == 0 else [f"{y!r} for {x!r}" for x, y in lines[:3]]
         why = (f"character error rate {score.cer:.1%} (over {max_cer:.0%})" if score.cer > max_cer else
-               f"{digit_errors} wrong digit{'s' * (digit_errors != 1)}")
+               f"{digit_errors} wrong digit{'s' * (digit_errors != 1)}" if max_digit_errors is not None
+               and digit_errors > max_digit_errors else f"{order:.0%} of lines in reading order")
+        if score.cer > max_cer and order is not None and order < 0.9:
+            why += f"; {order:.0%} of lines in reading order, {score.order_free_cer:.1%} wrong with them put back"
         run.check("ocr" if page is None else f"ocr page {page}", "fail" if bad else "pass", evaluator=EVALUATOR,
-                  reason=(why + (": " + "; ".join(worst) if worst else "")) if bad else None,
+                  reason=(why + (": " + "; ".join(worst) if worst and not why.endswith("reading order") else ""))
+                  if bad else None,
                   category="ocr" if bad else None,
                   raw_output=json.dumps({"kind": "ocr", "chars": score.chars, "char_errors": char_errors,
                                          "words": score.words, "word_errors": word_errors, "digits": score.digits,
-                                         "digit_errors": digit_errors, "worst": worst}))
+                                         "digit_errors": digit_errors, "worst": worst, "order": order,
+                                         "order_free_errors": free_errors}))
     return score
 
 
@@ -826,3 +895,133 @@ def appears_in(text: str, schema: Dict[str, _Field], fields: Optional[Sequence[s
                 gone.append(f"{n} {v!r} (unreadable)")
         return (not gone, "not in the document's text: " + ", ".join(gone) if gone else "")
     return Rule("values appear in the text", check)
+
+
+# ---------- tables: structure as well as cells ----------
+
+@dataclass
+class TableScore:
+    name: str
+    shape_right: bool  # as many rows and columns, the same header
+    cells: int  # the correct table's body cells
+    cells_read: int  # the body cells of the columns and rows that were matched, as read
+    cells_right: int
+    rows: Dict[str, int]  # tp, fp, fn over rows (right when every cell is)
+    notes: List[str]
+
+    @property
+    def precision(self) -> float:
+        return self.cells_right / self.cells_read if self.cells_read else (1.0 if not self.cells else 0.0)
+
+    @property
+    def recall(self) -> float:
+        return self.cells_right / self.cells if self.cells else 1.0
+
+    @property
+    def f1(self) -> float:
+        p, r = self.precision, self.recall
+        return 2 * p * r / (p + r) if p + r else 0.0
+
+    @property
+    def correct(self) -> bool:
+        return self.shape_right and self.cells_right == self.cells and not self.notes
+
+
+def score_table(run, expected: Sequence[Sequence[Any]], extracted: Sequence[Sequence[Any]], name: str = "table",
+                header: bool = True, cells: Union[_Field, Dict[str, _Field]] = None) -> TableScore:
+    """Score a table's structure and its cells, recorded as the check `table: <name>`. Tables are
+    lists of rows of cells; with `header`, the first row names the columns and columns are matched
+    by name (so a column moved is still the same column), else by position. Rows are matched by
+    cells in common, whatever their order. Says what happened to the structure: a column missing,
+    added, or two merged into one; rows missing or added. The cells score is the F1 of the cells
+    right over those of the correct table and those read: one number, like TEDS, that a lost
+    column and a garbled cell both lower. `cells`: the type of every cell, or per column name."""
+    exp = [list(r) for r in (expected or [])]
+    got = [list(r) for r in (extracted or [])]
+    spec_of = (lambda c: (cells.get(c) if isinstance(cells, dict) else cells) or Text())
+    notes: List[str] = []
+    if header and exp:
+        eh, gh = [Text().read(h) for h in exp[0]], [Text().read(h) for h in got[0]] if got else []
+        body_e, body_g = exp[1:], got[1:]
+        cols = {i: gh.index(h) for i, h in enumerate(eh) if h in gh}  # correct column -> read column
+        for j, h in enumerate(gh):
+            if j in cols.values():
+                continue
+            parts = [i for i in range(len(eh) - 1) if f"{eh[i]} {eh[i + 1]}" == h and i not in cols and i + 1 not in cols]
+            if parts:
+                notes.append(f"columns {exp[0][parts[0]]!r} and {exp[0][parts[0] + 1]!r} merged into one")
+            else:
+                notes.append(f"a column that isn't there: {got[0][j]!r}")
+        merged = {i for n in notes if n.startswith("columns ") for i in range(len(eh))
+                  if f"{exp[0][i]!r}" in n}
+        notes += [f"column {exp[0][i]!r} missing" for i in range(len(eh)) if i not in cols and i not in merged]
+        names = [str(h) for h in exp[0]]
+        header_right = sorted(eh) == sorted(gh)  # the same columns; their order isn't structure
+    else:
+        body_e, body_g = exp, got
+        width = max((len(r) for r in exp), default=0)
+        cols = {i: i for i in range(width) if any(len(r) > i for r in got)}
+        if max((len(r) for r in got), default=0) != width:
+            notes.append(f"{max((len(r) for r in got), default=0)} columns, not {width}")
+        names = [str(i) for i in range(width)]
+        header_right = True
+    cell = lambda row, i: row[i] if i is not None and i < len(row) else None
+    ok = lambda i, e_row, g_row: _cell_ok(spec_of(names[i]), cell(e_row, i), cell(g_row, cols.get(i)))
+    same = {(a, b): sum(ok(i, e, g) for i in cols) for a, e in enumerate(body_e) for b, g in enumerate(body_g)}
+    matched, ue, ug = [], set(), set()
+    if not cols:  # no column in common (merged, renamed): nothing to match rows by but their place
+        matched = list(zip(range(len(body_e)), range(len(body_g))))
+        ue, ug = {a for a, _ in matched}, {b for _, b in matched}
+    for a, b in sorted((p for p, n in same.items() if n), key=lambda p: (-same[p], p)):
+        if a not in ue and b not in ug:
+            matched.append((a, b))
+            ue.add(a)
+            ug.add(b)
+    if len(body_e) - len(ue):
+        notes.append(f"{len(body_e) - len(ue)} row(s) missing")
+    if len(body_g) - len(ug):
+        notes.append(f"{len(body_g) - len(ug)} row(s) that aren't there")
+    width = len(names)
+    right = sum(ok(i, body_e[a], body_g[b]) for a, b in matched for i in cols)
+    read_cells = sum(len(r) for r in body_g)
+    rows_right = sum(1 for a, b in matched if same[(a, b)] == width)
+    score = TableScore(name, header_right and len(body_e) == len(body_g) and len(cols) == width and
+                       all(len(r) == width for r in body_g), len(body_e) * width, read_cells, right,
+                       {"tp": rows_right, "fp": len(body_g) - rows_right, "fn": len(body_e) - rows_right}, notes)
+    wrong = [(a, b, i) for a, b in matched for i in cols if not ok(i, body_e[a], body_g[b])]
+    if wrong and not score.correct:
+        a, b, i = wrong[0]
+        notes.append(f"{len(wrong)} cell(s) wrong, e.g. {names[i]} in row {a + 1}: "
+                     f"{cell(body_g[b], cols.get(i))!r}, not {cell(body_e[a], i)!r}")
+    if run is not None:
+        run.check(f"table: {name}", "pass" if score.correct else "fail", evaluator=EVALUATOR,
+                  reason=None if score.correct else "; ".join(notes[:4]),
+                  category=None if score.correct else "table",
+                  raw_output=json.dumps({"kind": "table", "shape_right": score.shape_right, "cells": score.cells,
+                                         "cells_read": read_cells, "cells_right": right, **score.rows}))
+    return score
+
+
+# ---------- spot checks: published values, verified afterwards ----------
+
+SPOT_CHECKS = "spot-checks"
+
+
+def spot_check(document_id: str, field: str, published: Any, correct: Any, spec: Optional[_Field] = None,
+               reviewed: Optional[bool] = None, auto_approved: Optional[bool] = None,
+               checked_by: Optional[str] = None) -> bool:
+    """A value that reached published output, verified afterwards by a person: right or not. Sent as
+    a check of the run `spot-checks` against the production document, so the dashboard's **Escape
+    rate** says how often a wrong value got through both automation and review, and by which way
+    it went out (reviewed, or auto-approved). `spec`: how to compare (Text by default)."""
+    from assay_sdk import check
+    f = _score_value(field, spec or Text(), correct, published)
+    if f.kind == "unreadable":
+        return False
+    path = "reviewed" if reviewed else "auto-approved" if auto_approved else None
+    check(SPOT_CHECKS, f"{document_id}:{field}", "pass" if f.passed else "fail", run_id=document_id, field=field,
+          expected=correct, actual=published, evaluator="assay.spotcheck@1",
+          reason=None if f.passed else f"published {f.kind}: {f.note}" if f.note else f"published {f.kind}",
+          category=None if f.passed else f.kind,
+          raw_output=json.dumps({"kind": "spot_check", "path": path, "by": checked_by, "wrong": not f.passed}))
+    return bool(f.passed)
