@@ -39,12 +39,28 @@ def summarize(rows: List) -> Optional[dict]:
     rules: Dict[str, List[int]] = defaultdict(lambda: [0, 0])
     docs, acc, confident = [], [], []
     confusion: Dict[tuple, int] = defaultdict(int)
-    split = defaultdict(int)
+    split, ocr, where = defaultdict(int), defaultdict(int), defaultdict(float)
+    worst_pages, ious = [], []
     for r in mine:
         raw = _raw(r)
         kind = raw.get("kind")
         if raw.get("confidence") is not None and r.status in ("pass", "fail"):
             confident.append((float(raw["confidence"]), r.status == "pass"))
+        if kind == "ocr":
+            for k in ("chars", "char_errors", "words", "word_errors", "digits", "digit_errors"):
+                ocr[k] += int(raw.get(k) or 0)
+            ocr["pages"] += 1
+            ocr["failed"] += r.status == "fail"
+            if raw.get("chars"):
+                worst_pages.append((raw["char_errors"] / raw["chars"], r.case_id, r.field, raw.get("worst") or []))
+            continue
+        if kind == "location":
+            where["n"] += 1
+            where["right"] += r.status == "pass"
+            where["wrong_page"] += raw.get("page_right") is False
+            if raw.get("iou") is not None:
+                ious.append(float(raw["iou"]))
+            continue
         if kind == "classification":
             confusion[(raw.get("expected"), raw.get("predicted") or "(none)")] += 1
         elif kind == "split":
@@ -78,7 +94,20 @@ def summarize(rows: List) -> Optional[dict]:
     return {"documents": len({r.case_id for r in mine}), "checked": len(docs), "all_correct": sum(docs),
             "accuracy": sum(acc) / len(acc) if acc else None, "fields": dict(sorted(out.items())),
             "rules": {k: {"held": v[0], "checked": v[1]} for k, v in sorted(rules.items())},
-            "types": _types(confusion), "split": _split(split), "confidence": [list(x) for x in confident]}
+            "types": _types(confusion), "split": _split(split), "confidence": [list(x) for x in confident],
+            "ocr": _ocr(ocr, worst_pages), "locations": {"n": int(where["n"]), "right": int(where["right"]),
+                                                          "wrong_page": int(where["wrong_page"]),
+                                                          "mean_iou": sum(ious) / len(ious) if ious else None}
+            if where["n"] else None}
+
+
+def _ocr(o: Dict[str, int], worst: list) -> Optional[dict]:
+    if not o.get("pages"):
+        return None
+    return {"pages": o["pages"], "failed": o["failed"], "cer": _ratio(o["char_errors"], o["chars"]),
+            "wer": _ratio(o["word_errors"], o["words"]), "digit_error_rate": _ratio(o["digit_errors"], o["digits"]),
+            "digit_errors": o["digit_errors"],
+            "worst": [[c, case, field, lines] for c, case, field, lines in sorted(worst, key=lambda x: -x[0])[:3] if c]}
 
 
 def _ratio(a: float, b: float) -> Optional[float]:
@@ -160,6 +189,27 @@ def lines(now: dict, before: Optional[dict] = None, cfg: Optional[dict] = None) 
     out += _type_lines(now.get("types"), (before or {}).get("types"))
     out += _split_lines(now.get("split"), (before or {}).get("split"))
     out += _confidence_lines(now, before, cfg)
+    out += _ocr_lines(now.get("ocr"), (before or {}).get("ocr"))
+    loc, bl = now.get("locations"), (before or {}).get("locations")
+    if loc:
+        share, was = _ratio(loc["right"], loc["n"]), _ratio(bl["right"], bl["n"]) if bl else None
+        out.append(f"Locations    {loc['n']} field{'s' * (loc['n'] != 1)} · right page and box {loc['right']}/{loc['n']} ({_pct(share)}"
+                   f"{_was(share, was)})" + (f" · {loc['wrong_page']} on the wrong page" if loc["wrong_page"] else "")
+                   + (f" · mean overlap {loc['mean_iou']:.2f}" if loc["mean_iou"] is not None else ""))
+    return out
+
+
+def _ocr_lines(o: Optional[dict], b: Optional[dict]) -> List[str]:
+    if not o:
+        return []
+    rate = lambda k, label: f"{label} {_pct(o[k])}" + (f" (was {_pct(b[k])})" if b and b.get(k) is not None
+                                                          and o[k] is not None and abs(b[k] - o[k]) >= 0.0005 else "")
+    out = [f"OCR          {o['pages']} page{'s' * (o['pages'] != 1)} · " + " · ".join(
+        rate(k, label) for k, label in (("cer", "characters wrong"), ("wer", "words wrong"),
+                                        ("digit_error_rate", "digits wrong")) if o[k] is not None)
+           + (f" · {o['failed']} over the limit" if o["failed"] else "")]
+    for c, case, field, lines in o["worst"][:2]:
+        out.append(f"             {case} {field}: {_pct(c)}" + (f", e.g. {lines[0]}" if lines else ""))
     return out
 
 
@@ -255,6 +305,9 @@ def markdown(now: dict, before: Optional[dict] = None) -> str:
         share = _ratio(sp["right"], sp["files"])
         parts.append(f"files split right {sp['right']}/{sp['files']} ({_pct(share)}"
                      f"{_was(share, _ratio(bs['right'], bs['files']) if bs else None)})")
+    o, bo = now.get("ocr"), (before or {}).get("ocr")
+    if o and o["cer"] is not None:
+        parts.append(f"OCR characters wrong {_pct(o['cer'])}{_was(o['cer'], (bo or {}).get('cer'))}")
     if not now["checked"]:
         return " · ".join(parts)
     share = now["all_correct"] / now["checked"] if now["checked"] else None

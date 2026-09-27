@@ -46,7 +46,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 __all__ = ["Text", "Number", "Money", "Date", "LineItems", "score_document", "check_rules", "total_of",
            "before", "required", "rule", "DocumentScore", "FieldScore", "EVALUATOR", "classify_document",
-           "score_split", "SplitScore"]
+           "score_split", "SplitScore", "score_ocr", "OcrScore", "score_locations", "appears_in"]
 
 EVALUATOR = "assay.documents@1"
 CORRECT, WRONG, MISSING, INVENTED = "correct", "wrong", "missing", "invented"
@@ -629,3 +629,200 @@ def score_split(run, expected: Any, predicted: Any, page_count: Optional[int] = 
                                          "fp": len(pred) - len(right), "fn": len(exp) - len(right),
                                          "boundaries": bounds}))
     return score
+
+
+# ---------- OCR: the text read from a page against what it says ----------
+
+def _edits(a: Sequence, b: Sequence) -> int:
+    """Levenshtein distance: insertions, deletions and substitutions turning a into b."""
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        cur = [i]
+        for j, y in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x != y)))
+        prev = cur
+    return prev[-1]
+
+
+def _changed_lines(ref: str, hyp: str) -> List[Tuple[str, str]]:
+    """The stretches of lines that differ between two texts, aligned line by line (a page is
+    thousands of characters: whole-page Levenshtein in Python takes seconds; lines that match cost
+    nothing)."""
+    import difflib
+    a, b = ref.split("\n"), hyp.split("\n")
+    out = []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == "equal":
+            continue
+        if op == "replace" and i2 - i1 == j2 - j1:  # as many lines read as there are: line for line
+            out += [(x, y) for x, y in zip(a[i1:i2], b[j1:j2]) if x != y]
+        else:
+            out.append(("\n".join(a[i1:i2]), "\n".join(b[j1:j2])))
+    return out
+
+
+def _bounded(a: Sequence, b: Sequence) -> int:
+    """Levenshtein, or when both are huge (a page read as something else entirely), the longer length."""
+    return _edits(a, b) if len(a) * len(b) <= 4_000_000 else max(len(a), len(b))
+
+
+@dataclass
+class OcrScore:
+    chars: int
+    char_errors: int
+    words: int
+    word_errors: int
+    digits: int
+    digit_errors: int
+    lines: List[Tuple[str, str]]  # (what the page says, what was read), where they differ
+
+    @property
+    def cer(self) -> float:
+        return self.char_errors / self.chars if self.chars else (0.0 if not self.char_errors else 1.0)
+
+    @property
+    def wer(self) -> float:
+        return self.word_errors / self.words if self.words else (0.0 if not self.word_errors else 1.0)
+
+    @property
+    def digit_error_rate(self) -> Optional[float]:
+        return self.digit_errors / self.digits if self.digits else None
+
+
+def score_ocr(run, expected: str, read: str, page: Optional[int] = None, max_cer: float = 0.05,
+              max_digit_errors: Optional[int] = None, case: bool = True) -> OcrScore:
+    """Score OCR text against what the page says, recorded as the check `ocr` (`ocr page 3` with
+    `page`): the character error rate (edits over the page's characters), the word error rate, and
+    the digits on their own, since a wrong digit is a wrong amount. Spacing doesn't count; case
+    does unless case=False. It fails over `max_cer`, or with more than `max_digit_errors` wrong
+    digits when that's given."""
+    norm = lambda t: "\n".join(re.sub(r"[ \t]+", " ", ln).strip() for ln in str(t or "").splitlines() if ln.strip())
+    ref, hyp = norm(expected), norm(read)
+    if not case:
+        ref, hyp = ref.lower(), hyp.lower()
+    lines = _changed_lines(ref, hyp)
+    digits = lambda t: re.sub(r"\D", "", t)
+    char_errors = sum(_bounded(x.replace("\n", ""), y.replace("\n", "")) for x, y in lines)
+    word_errors = sum(_bounded(x.split(), y.split()) for x, y in lines)
+    digit_errors = sum(_bounded(digits(x), digits(y)) for x, y in lines)
+    score = OcrScore(len(ref.replace("\n", "")), char_errors, len(ref.split()), word_errors, len(digits(ref)),
+                     digit_errors, lines)
+    if run is not None:
+        bad = score.cer > max_cer or (max_digit_errors is not None and digit_errors > max_digit_errors)
+        worst = [f"{y!r} for {x!r}" for x, y in lines[:3]]
+        why = (f"character error rate {score.cer:.1%} (over {max_cer:.0%})" if score.cer > max_cer else
+               f"{digit_errors} wrong digit{'s' * (digit_errors != 1)}")
+        run.check("ocr" if page is None else f"ocr page {page}", "fail" if bad else "pass", evaluator=EVALUATOR,
+                  reason=(why + (": " + "; ".join(worst) if worst else "")) if bad else None,
+                  category="ocr" if bad else None,
+                  raw_output=json.dumps({"kind": "ocr", "chars": score.chars, "char_errors": char_errors,
+                                         "words": score.words, "word_errors": word_errors, "digits": score.digits,
+                                         "digit_errors": digit_errors, "worst": worst}))
+    return score
+
+
+# ---------- where on the page a value was found ----------
+
+def _box(b: Any, fmt: str) -> Optional[Tuple[float, float, float, float]]:
+    if b is None:
+        return None
+    x = [float(v) for v in (b.values() if isinstance(b, dict) else b)]
+    if len(x) != 4:
+        raise ValueError(f"a box is 4 numbers, not {b!r}")
+    if fmt == "xywh":
+        x = [x[0], x[1], x[0] + x[2], x[1] + x[3]]
+    return min(x[0], x[2]), min(x[1], x[3]), max(x[0], x[2]), max(x[1], x[3])
+
+
+def iou(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> float:
+    """Intersection over union of two boxes (x0, y0, x1, y1)."""
+    w = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    h = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = w * h
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def score_locations(run, expected: Dict[str, Any], extracted: Dict[str, Any], min_iou: float = 0.5,
+                    box: str = "xyxy") -> Dict[str, Tuple[Optional[bool], str]]:
+    """Whether each field was read from the right place: the same page, and a box overlapping the
+    correct one by at least `min_iou` (intersection over union). Locations are {"page": 2, "bbox":
+    [x0, y0, x1, y1]} (box="xywh" for x, y, width, height), in the same units on both sides.
+    Recorded as `location: <field>` checks."""
+    out = {}
+    for name, e in expected.items():
+        a = (extracted or {}).get(name)
+        if empty(e):
+            continue
+        ep, ab = e.get("page") if isinstance(e, dict) else None, a.get("page") if isinstance(a, dict) else None
+        eb = _box(e.get("bbox") if isinstance(e, dict) else e, box)
+        if empty(a):
+            ok, why, overlap = False, "no location given", None
+        elif ep is not None and ab is not None and int(ep) != int(ab):
+            ok, why, overlap = False, f"on page {ab}, not {ep}", 0.0
+        else:
+            xb = _box(a.get("bbox") if isinstance(a, dict) else a, box)
+            overlap = iou(eb, xb) if eb and xb else None
+            ok = overlap is not None and overlap >= min_iou
+            why = "" if ok else f"overlaps the right box by {overlap:.2f} (under {min_iou:g})" if overlap is not None \
+                else "no box"
+        out[name] = (ok, why)
+        if run is not None:
+            run.check(f"location: {name}", "pass" if ok else "fail", evaluator=EVALUATOR, reason=why or None,
+                      category=None if ok else "location",
+                      raw_output=json.dumps({"kind": "location", "iou": overlap, "page_right": not why.startswith("on page")}))
+    return out
+
+
+# ---------- a value that's on the page: a rule, with no correct values ----------
+
+_NUMBERS = re.compile(r"\(?-?[$€£¥₹]?\s?\d[\d.,' ]*\d(?:\s?[$€£¥₹])?\)?|\d")
+_DATEISH = re.compile(r"\b\d{1,4}[./-]\d{1,2}[./-]\d{1,4}\b|\b\d{1,2}(?:st|nd|rd|th)? [A-Za-z]{3,9}\.? \d{4}\b|"
+                      r"\b[A-Za-z]{3,9}\.? \d{1,2}(?:st|nd|rd|th)?,? \d{4}\b")
+
+
+def _found(spec: _Field, value: Any, text: str) -> bool:
+    if isinstance(spec, Date):
+        want = spec.read(value)
+        for m in _DATEISH.finditer(text):
+            try:
+                if spec.read(m.group(0)) == want:
+                    return True
+            except Unreadable:
+                pass
+        return False
+    if isinstance(spec, Number):
+        want = spec.read(value)
+        want = want[0] if isinstance(want, tuple) else want
+        for m in _NUMBERS.finditer(text):
+            try:
+                got = spec.read(m.group(0).strip())
+            except (Unreadable, ValueError):
+                continue
+            if abs((got[0] if isinstance(got, tuple) else got) - want) <= max(getattr(spec, "tolerance", 0), 1e-9):
+                return True
+        return False
+    return Text().read(value) in Text().read(text)
+
+
+def appears_in(text: str, schema: Dict[str, _Field], fields: Optional[Sequence[str]] = None) -> Rule:
+    """Each extracted value appears in the document's text (its OCR), read by its type: 1234.56 is
+    found as "1,234.56", a date as "4 March 2026". A value that's nowhere on the page was made up
+    or read from somewhere else. Needs no correct values, so it runs on production documents."""
+    names = list(fields or [k for k, v in schema.items() if not isinstance(v, LineItems)])
+
+    def check(doc):
+        gone = []
+        for n in names:
+            v = _get(doc, n)
+            if empty(v):
+                continue
+            try:
+                if not _found(schema.get(n) or Text(), v, text or ""):
+                    gone.append(f"{n} {v!r}")
+            except Unreadable:
+                gone.append(f"{n} {v!r} (unreadable)")
+        return (not gone, "not in the document's text: " + ", ".join(gone) if gone else "")
+    return Rule("values appear in the text", check)

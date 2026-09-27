@@ -155,6 +155,62 @@ Confidence   9 values · calibration error 0.199 (was 0.088) · says 97.7% on av
 - **At your threshold:** what it approves, and how many wrong values are among them: the ones
   that would reach output without anyone looking.
 
+## OCR: the text read from a page against what it says
+
+```python
+from assay_sdk.documents import score_ocr
+
+score_ocr(assay_case, expected=TRANSCRIPTS["17-p1"], read=ocr_text, page=1, max_cer=0.02, max_digit_errors=0)
+```
+
+A check per page, `ocr page 1`, with three rates:
+
+- **characters wrong:** edits (insertions, deletions, substitutions) over the page's characters,
+  the character error rate;
+- **words wrong:** the same over words;
+- **digits wrong:** the digits on their own, since a misread digit is a wrong amount, date or
+  account number while a misread letter in a sentence rarely matters. `max_digit_errors=0` fails a
+  page on a single one.
+
+Spacing doesn't count; case does, unless `case=False`. It fails over `max_cer` (default 5%). The
+page is compared line by line, so a line read twice, dropped or out of order is counted as that,
+and a long page is scored quickly. The report sums the rates over every page, against the
+baseline, and shows the worst pages with a line that went wrong:
+
+```
+OCR          1 page · characters wrong 2.2% (was 0%) · words wrong 11.1% (was 0%) · digits wrong 8.3% (was 0%) · 1 over the limit
+             tests/test_pages.py::test_page ocr page 1: 2.2%, e.g. 'Total: 1,284.56 EUR' for 'Total: 1,234.56 EUR'
+```
+
+## Where on the page a value was read
+
+```python
+from assay_sdk.documents import score_locations
+
+score_locations(assay_case, expected={"total": {"page": 1, "bbox": [412, 690, 520, 708]}},
+                extracted=pipeline.locations, min_iou=0.5)
+```
+
+A check per field, `location: total`: right when it's on the same page and its box overlaps the
+correct one by at least `min_iou` (intersection over union: the overlap's area over both boxes'
+together). Boxes are `[x0, y0, x1, y1]`, or `box="xywh"` for x, y, width, height, in the same
+units on both sides. A value read from the right place but mistyped is a wrong value; one read
+from the wrong place (the subtotal for the total) is usually both.
+
+## A value that isn't on the page was made up
+
+```python
+from assay_sdk.documents import check_rules, appears_in
+
+check_rules(run, extracted, [appears_in(ocr_text, SCHEMA)])
+```
+
+A rule: each extracted value appears in the document's own text, read by its type, so 1234.56 is
+found as "1,234.56 EUR" and 2026-03-04 as "4 March 2026". A value that's nowhere in the text was
+invented, or read from another document. It needs no correct values, so it runs on every
+production document, where invented values are otherwise invisible: "not in the document's text:
+total '1284.56'".
+
 ## In the report
 
 `assay test` and `pytest --assay` add a Documents block, against the baseline:

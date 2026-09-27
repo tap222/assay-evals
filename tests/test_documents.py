@@ -291,3 +291,89 @@ def test_documents_config_is_checked(project):
     (project / "assay.toml").write_text('[test]\ncommand = "true"\n\n[documents]\nthreshold = 0.9\n')
     with pytest.raises(local.SetupError, match="Use auto_approve, target"):
         local.load_config(project)
+
+
+# ---------- phase 3: OCR, locations, values on the page ----------
+
+import time  # noqa: E402
+
+from assay_sdk.documents import Rule, appears_in, iou, score_locations, score_ocr  # noqa: E402
+
+PAGE = "INVOICE 17\nDate: 4 March 2026\nTotal: 1,234.56 EUR\nThank you"
+
+
+def test_ocr_counts_characters_words_and_digits():
+    s = score_ocr(None, PAGE, "INV0ICE 17\nDate: 4  March 2026\nTota1: 1,284.56 EUR\nThank you")
+    assert (s.char_errors, s.word_errors, s.digit_errors, s.digits) == (3, 3, 3, 13)  # spacing doesn't count
+    assert s.lines == [("INVOICE 17", "INV0ICE 17"), ("Total: 1,234.56 EUR", "Tota1: 1,284.56 EUR")]
+    assert score_ocr(None, PAGE, PAGE.lower(), case=False).cer == 0 and score_ocr(None, PAGE, PAGE.lower()).cer > 0
+    r = Recorder()
+    score_ocr(r, PAGE, PAGE.replace("234", "284"), page=2, max_cer=0.05, max_digit_errors=0)
+    c = r.checks[0]
+    assert c["field"] == "ocr page 2" and c["status"] == "fail" and c["category"] == "ocr"
+    assert c["reason"] == "1 wrong digit: 'Total: 1,284.56 EUR' for 'Total: 1,234.56 EUR'"
+
+
+def test_a_long_page_is_scored_line_by_line():
+    page = "\n".join(f"line {i} amount {i * 3.17:.2f} for the item number {i}" for i in range(400))
+    started = time.time()
+    s = score_ocr(None, page, page.replace("7", "1"))
+    assert time.time() - started < 1.5 and 0 < s.cer < 0.05  # every line differs, still quick
+    lines = page.split("\n")
+    lines.insert(200, "a line the OCR made up")
+    assert score_ocr(None, page, "\n".join(lines)).char_errors == len("a line the OCR made up")
+
+
+def test_a_value_read_from_the_wrong_place():
+    assert iou((0, 0, 10, 10), (5, 0, 15, 10)) == pytest.approx(1 / 3)
+    r = Recorder()
+    out = score_locations(r, {"total": {"page": 1, "bbox": [10, 10, 50, 20]}, "date": {"page": 1, "bbox": [0, 0, 10, 10]},
+                              "vendor": {"page": 1, "bbox": [0, 0, 5, 5]}, "iban": {"page": 1, "bbox": [0, 0, 100, 10]}},
+                          {"total": {"page": 1, "bbox": [12, 10, 50, 21]}, "date": {"page": 2, "bbox": [0, 0, 10, 10]},
+                           "iban": {"page": 1, "bbox": [0, 0, 20, 10]}})
+    assert out == {"total": (True, ""), "date": (False, "on page 2, not 1"), "vendor": (False, "no location given"),
+                   "iban": (False, "overlaps the right box by 0.20 (under 0.5)")}
+    assert [c["field"] for c in r.checks] == ["location: total", "location: date", "location: vendor", "location: iban"]
+    xywh = score_locations(None, {"a": {"bbox": [0, 0, 10, 10]}}, {"a": {"bbox": [0, 0, 10, 10]}}, box="xywh")
+    assert xywh == {"a": (True, "")}
+
+
+def test_a_value_thats_not_on_the_page_was_made_up():
+    schema = {"total": Money(), "invoice_date": Date(day_first=True), "vendor": Text(), "number": Text()}
+    rule_ = appears_in(PAGE, schema)
+    assert isinstance(rule_, Rule)
+    ok, why = rule_.fn({"total": "1234.56", "invoice_date": "2026-03-04", "number": "17"})
+    assert ok and why == ""  # found as "1,234.56 EUR" and "4 March 2026"
+    ok, why = rule_.fn({"total": "1234.50", "invoice_date": "04/03/2026", "vendor": "Acme"})
+    assert not ok and why == "not in the document's text: total '1234.50', vendor 'Acme'"
+    assert check_rules(None, {"total": "999"}, [appears_in(PAGE, schema)])["values appear in the text"][0] is False
+
+
+PHASE3 = '''
+import os
+from assay_sdk.documents import score_ocr, score_locations, check_rules, appears_in, Money
+
+PAGE = "Total: 1,234.56 EUR\\nDue: 30 April 2026\\nThank you"
+after = os.environ.get("MODE") == "after"
+
+def test_page(assay_case):
+    read = PAGE.replace("234", "284") if after else PAGE          # the PR's OCR model misreads a digit
+    score_ocr(assay_case, PAGE, read, page=1, max_digit_errors=0)
+    got = {"total": {"page": 1, "bbox": [10, 10, 60, 20]}}
+    score_locations(assay_case, {"total": {"page": 1, "bbox": [10, 10, 60, 20]}}, got)
+    check_rules(assay_case, {"total": "1284.56" if after else "1234.56"}, [appears_in(PAGE, {"total": Money()})])
+'''
+
+
+def test_ocr_and_grounding_in_the_report(project):
+    (project / "tests").mkdir()
+    (project / "tests" / "test_pages.py").write_text(PHASE3)
+    assert run(project).returncode == 0
+    out = run(project, env={"MODE": "after"})
+    assert out.returncode == 1
+    assert "OCR          1 page · characters wrong 2.2% (was 0%) · words wrong 11.1% (was 0%) · digits wrong 8.3% " \
+           "(was 0%) · 1 over the limit" in out.stdout  # 1 of the page's 12 digits
+    assert "'Total: 1,284.56 EUR' for 'Total: 1,234.56 EUR'" in out.stdout
+    assert "Locations    1 field · right page and box 1/1 (100%) · mean overlap 1.00" in out.stdout
+    assert "not in the document's text: total '1284.56'" in out.stdout  # no labels needed to catch it
+    assert "OCR characters wrong 2.2%, was 0%" in (project / ".assay" / "summary.md").read_text()

@@ -39,8 +39,9 @@ REGRESSIONS
 - **Document extraction.** Each field against its correct value, by type (dates, amounts,
   "1.234,56 €"), wrong, missing or invented; line items matched in any order; all fields correct
   per document; rules such as line items adding up to the total; document types as a confusion
-  matrix; files split into documents; and whether the extractor's confidence is safe to
-  auto-approve on: [document extraction](docs/documents.md).
+  matrix; files split into documents; whether the extractor's confidence is safe to auto-approve
+  on; OCR error rates (characters, words, digits); where on the page a value was read; and values
+  that aren't in the document's text: [document extraction](docs/documents.md).
 - **Agents and workflows.** Trajectories, path and claim contracts, plan adherence, multi-turn
   conversations, and simulated users. [Rewordings](docs/testing.md#rewordings-the-same-request-in-other-words):
   the same request in other words must get the same behavior.
