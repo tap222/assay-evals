@@ -954,7 +954,8 @@ def test_line_items_collapsing_fails_the_run_though_the_check_was_already_failin
     out = run(project, env={"MODE": "after"})
     assert out.returncode == 1, out.stdout
     # 9 of 10 rows right in every document before, 2 of 10 now: the headers stay right
-    assert "failed: line_items: F1 20.0%, was 90.0%: down 70.0 points, at most 5 allowed" in out.stdout
+    assert "failed: line_items: F1 20.0%, was 90.0%; per document down 70.0 points (95% interval 70.0 to 70.0, " \
+           "4 documents), surely more than the 2 allowed" in out.stdout
     assert "1 document gate failed: line_items: F1 20.0%" in out.stdout
     md = (project / ".assay" / "summary.md").read_text()
     assert "weighted field accuracy 80.0%" in md  # the average still looks fine
@@ -1350,13 +1351,17 @@ def case(i, run):
         got["total"] = "100"                 # the new model breaks only on unseen layouts
     score_document(run, truth, got, SCHEMA, facets={"template_seen": not unseen,
                                                     "source": "scanned" if i % 2 else "digital"})
-''' + "".join(f"\ndef test_{i}(assay_case): case({i}, assay_case)\n" for i in range(20))
+'''
+
+
+def sliced(n):
+    return SLICED + "".join(f"\ndef test_{i}(assay_case): case({i}, assay_case)\n" for i in range(n))
 
 
 def test_a_slice_that_got_worse_is_named_though_the_average_held(project):
     from assay.__main__ import main
     (project / "tests").mkdir()
-    (project / "tests" / "test_sliced.py").write_text(SLICED)
+    (project / "tests" / "test_sliced.py").write_text(sliced(40))
     (project / "assay.toml").write_text('[documents.gates]\n'
                                         '"document[template_seen=unseen]" = { min_accuracy = 0.9 }\n')
     first = run(project)
@@ -1365,14 +1370,31 @@ def test_a_slice_that_got_worse_is_named_though_the_average_held(project):
     assert main(["accept"]) == 0
     out = run(project, env={"MODE": "after"})
     assert out.returncode == 1
-    assert "Slices       4 by facet · documents with zero errors · worse: template_seen=unseen" in out.stdout
+    # 8 unseen documents, all right before and wrong now: 1 in 256 by chance
+    assert "Slices       4 by facet · documents with zero errors · worse beyond chance: template_seen=unseen" \
+        in out.stdout
     line = next(x for x in out.stdout.splitlines() if x.strip().startswith("template_seen=unseen"))
-    assert "4 · zero errors 0% (was 100%, down 100.0 points)" in line
-    assert next(x for x in out.stdout.splitlines() if x.strip().startswith("template_seen=seen")).split()[1:5] == \
-        ["16", "·", "zero", "errors"]
+    assert "8 · zero errors 0% (was 100%, down 100.0 points: worse beyond chance, p 0.016)" in line
+    # each source slice lost 4 of 20: within chance, and said so
+    digital = next(x for x in out.stdout.splitlines() if x.strip().startswith("source=digital"))
+    assert "down 20.0 points, within chance" in digital
     assert "weighted field accuracy 93.3%" in out.stdout  # the average, hiding it
     assert "failed: document[template_seen=unseen]: accuracy 0%, at least 90.0% required" in out.stdout
-    assert "slices worse: template\\_seen=unseen" in (project / ".assay" / "summary.md").read_text()
+    md = (project / ".assay" / "summary.md").read_text()
+    assert "slices worse beyond chance: template\\_seen=unseen" in md and "source=" not in md.split("beyond chance:")[1]
+
+
+def test_a_small_slice_is_not_called_worse_on_noise(project):
+    from assay.__main__ import main
+    (project / "tests").mkdir()
+    (project / "tests" / "test_sliced.py").write_text(sliced(20))
+    run(project)
+    assert main(["accept"]) == 0
+    out = run(project, env={"MODE": "after"})
+    # 4 unseen documents all flipped: 1 in 16 by chance, 1 in 4 across four slices
+    line = next(x for x in out.stdout.splitlines() if x.strip().startswith("template_seen=unseen"))
+    assert "down 100.0 points, within chance (p 0.25, 4 of 4 documents)" in line
+    assert "worse beyond chance" not in out.stdout
 
 
 def test_the_dashboard_slices_by_facet_and_marks_new_templates():
@@ -1504,3 +1526,44 @@ def test_the_report_says_how_repeatable_extraction_is(project):
     assert (m.overall.numerator, m.overall.denominator) == (9, 10)
     assert {r.slice_value: r.value for r in m.results if r.dimension == "field"} == {"number": 1.0, "total": 0.8}
     assert {x["id"]: x["status"] for x in coverage.compute(src, w)["measures"]}["value_stability"] == "live"
+
+
+# ---------- drops tested with intervals, not a fixed number of points ----------
+
+def _field(per_case, table=True):
+    n = len(per_case)
+    right = sum(per_case.values())
+    return {"precision": None, "recall": None, "f1": right / n, "errors": 0, "table": table, "per_case": per_case}
+
+
+def test_a_drop_fails_only_when_surely_past_the_tolerance():
+    from assay.documents import check_gates, paired_drop
+    before = {"fields": {"line_items": _field({f"c{i}": 1.0 for i in range(6)})}}
+    collapse = {"fields": {"line_items": _field({f"c{i}": 0.2 for i in range(6)})}}
+    g = check_gates(collapse, before, None)[0]
+    assert g["passed"] is False and g["drop"] == pytest.approx(0.8) and "surely more than the 2 allowed" in g["why"]
+    # two documents much worse, four the same: could be worse, too few to tell
+    mixed = {"fields": {"line_items": _field({"c0": 0.5, "c1": 0.6, **{f"c{i}": 1.0 for i in range(2, 6)}})}}
+    g = check_gates(mixed, before, None)[0]
+    assert g["passed"] is True and g["unsure"] and "add documents to tell" in g["why"]
+    lo, hi = g["interval"]
+    assert lo < 0.02 < hi
+    steady = {"fields": {"line_items": _field({f"c{i}": 1.0 for i in range(6)})}}
+    g = check_gates(steady, before, None)[0]
+    assert g["passed"] and not g["unsure"] and "within the 2 allowed" in g["why"]
+    assert paired_drop({"c0": 1.0}, {"c0": 0.0}) is None  # one document: nothing to test
+    assert check_gates(mixed, before, {"line_items": {}}) == []  # turned off
+
+
+def test_slices_worse_beyond_chance_are_corrected_for_how_many_there_are():
+    from assay.documents import slice_changes
+    before = {"a": {"zero_errors": 1.0, "cases": {f"c{i}": True for i in range(8)}},
+              "b": {"zero_errors": 1.0, "cases": {f"d{i}": True for i in range(8)}}}
+    now = {"a": {"zero_errors": 0.0, "cases": {f"c{i}": False for i in range(8)}},  # all 8 lost
+           "b": {"zero_errors": 0.75, "cases": {f"d{i}": i >= 2 for i in range(8)}}}  # 2 of 8 lost
+    ch = slice_changes(now, before)
+    assert ch["a"]["p"] == pytest.approx(1 / 256) and ch["a"]["q"] == pytest.approx(2 / 256) and ch["a"]["worse"]
+    assert ch["b"]["p"] == pytest.approx(0.25) and not ch["b"]["worse"]
+    gained = slice_changes({"a": {"zero_errors": 1.0, "cases": {"c0": True}}},
+                           {"a": {"zero_errors": 0.0, "cases": {"c0": False}}})
+    assert gained["a"]["p"] == 1.0 and not gained["a"]["worse"]

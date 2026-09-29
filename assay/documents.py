@@ -23,11 +23,11 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 EVALUATOR = "assay.documents@1"
 _MADE_UP = ("format", "inferred", "fabricated")
-TABLE_DROP = 0.05  # the default gate on line items: row F1 may fall this much below the baseline's
+TABLE_TOLERANCE = 0.02  # the default gate on line items: fails when row F1 is surely more than this below
 GATE_KEYS = ("max_errors", "min_accuracy", "min_precision", "min_recall", "min_f1", "max_drop")
 Z = 1.96
 
@@ -79,6 +79,7 @@ def summarize(rows: List) -> Optional[dict]:
     confused, words_confused = defaultdict(int), defaultdict(int)
     rankings: Dict[str, dict] = {}
     facet_docs: Dict[tuple, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    slice_cases: Dict[tuple, Dict[str, bool]] = defaultdict(dict)  # per slice: case -> every field right
     repeats: Dict[tuple, List[tuple]] = defaultdict(list)  # (case, field) -> [(value, passed)] over attempts
     worst_pages, ious = [], []
     tables, cells, made_up, unscored = defaultdict(int), defaultdict(int), defaultdict(int), defaultdict(int)
@@ -153,6 +154,7 @@ def summarize(rows: List) -> Optional[dict]:
                 d = facet_docs[(k, v)]
                 d["n"] += 1
                 d["zero"] += r.status == "pass"
+                slice_cases[(k, v)][r.case_id] = r.status == "pass"
                 if raw.get("accuracy") is not None:
                     d["acc"] += float(raw["accuracy"])
                     d["acc_n"] += 1
@@ -177,6 +179,7 @@ def summarize(rows: List) -> Optional[dict]:
                 f[k] += float(raw.get(k) or 0)
             f[kind or "unknown"] += 1
             f["n"] += 1
+            f.setdefault("per_case", defaultdict(list))[r.case_id].append(float(raw.get("share", r.status == "pass")))
             if "value" in raw and not raw.get("part_of"):
                 repeats[(r.case_id, r.field)].append((raw["value"], r.status == "pass"))
             f["table"] = f["table"] or "rows" in raw
@@ -200,11 +203,13 @@ def summarize(rows: List) -> Optional[dict]:
                     made_up[raw["made_up"]] += 1
     out = {}
     for name, f in fields.items():
+        per_case = {c: sum(v) / len(v) for c, v in (f.pop("per_case", None) or {}).items()}
         tp, fp, fn = f["tp"], f["fp"], f["fn"]
         out[name] = {"precision": tp / (tp + fp) if tp + fp else None, "recall": tp / (tp + fn) if tp + fn else None,
                      "f1": 2 * tp / (2 * tp + fp + fn) if tp + fp + fn else None,
                      "errors": int(f["wrong"] + f["missing"] + f["invented"]), "table": bool(f["table"]),
                      "accuracy": f["correct"] / f["n"] if f["n"] else None, "critical": bool(f["critical"]),
+                     "per_case": per_case,
                      "n": int(f["n"]), **{k: int(f[k]) for k in ("correct", "wrong", "missing", "invented", *_MADE_UP)
                                           if f[k]}}
     return {"documents": len({r.case_id for r in mine}), "checked": len(docs), "all_correct": sum(docs),
@@ -218,7 +223,8 @@ def summarize(rows: List) -> Optional[dict]:
             "stability": _stability(repeats),
             "slices": {f"{k}={v}": {"n": int(d["n"]), "zero_errors": d["zero"] / d["n"],
                                     "accuracy": d["acc"] / d["acc_n"] if d["acc_n"] else None,
-                                    "cell_f1": _ratio(2 * d["tp"], 2 * d["tp"] + d["fp"] + d["fn"])}
+                                    "cell_f1": _ratio(2 * d["tp"], 2 * d["tp"] + d["fp"] + d["fn"]),
+                                    "cases": slice_cases[(k, v)]}
                        for (k, v), d in sorted(facet_docs.items())} or None,
             "made_up": {k: made_up[k] for k in ("values", "grounded", *_MADE_UP)} if made_up["values"] else None,
             "rules": {k: {"held": v[0], "checked": v[1]} for k, v in sorted(rules.items())},
@@ -236,6 +242,42 @@ def summarize(rows: List) -> Optional[dict]:
                           "mean_iou": sum(ious) / len(ious) if ious else None} if where["n"] else None}
 
 
+def paired_drop(now: Optional[Dict[str, float]], before: Optional[Dict[str, float]]
+                ) -> Optional[Tuple[float, float, float, int]]:
+    """How far a per-document score fell, on the documents in both runs: (drop, low, high, n), a
+    paired t interval (95%) on each document's before minus now. The document is the unit, so a
+    long table doesn't count for more than a short one. None with fewer than two documents."""
+    from assay.flaky import paired_change
+    common = sorted(set(now or {}) & set(before or {}))
+    if len(common) < 2:
+        return None
+    point, lo, hi = paired_change([now[c] for c in common], [before[c] for c in common])  # before - now
+    return point, lo, hi, len(common)
+
+
+def slice_changes(now: Optional[dict], before: Optional[dict], alpha: float = 0.05) -> Dict[str, dict]:
+    """Per slice, whether its documents with zero errors fell beyond chance: an exact one-sided
+    McNemar test on the documents in both runs (right before and wrong now, against the reverse),
+    Benjamini-Hochberg across the slices so many slices don't make false alarms.
+    {slice: {"drop", "was", "p", "q", "worse", "lost", "gained", "n"}}."""
+    from assay.flaky import _binom_cdf, bh
+    out = {}
+    for name, s in (now or {}).items():
+        b = (before or {}).get(name)
+        if not b or not b.get("cases") or not s.get("cases"):
+            continue
+        common = set(s["cases"]) & set(b["cases"])
+        lost = sum(1 for c in common if b["cases"][c] and not s["cases"][c])
+        gained = sum(1 for c in common if s["cases"][c] and not b["cases"][c])
+        p = 1.0 if not lost else 1 - _binom_cdf(lost - 1, lost + gained, 0.5)  # P(X >= lost)
+        out[name] = {"drop": b["zero_errors"] - s["zero_errors"], "was": b["zero_errors"], "p": p,
+                     "lost": lost, "gained": gained, "n": len(common)}
+    names = sorted(out)
+    for name, q in zip(names, bh([out[n]["p"] for n in names])):
+        out[name].update(q=q, worse=q <= alpha and out[name]["drop"] > 0)
+    return out
+
+
 def check_gates(now: Optional[dict], before: Optional[dict], gates: Optional[dict]) -> List[dict]:
     """Per-field gates, beside the per-case regressions: an average can stay plausible while one
     field collapses, and some fields can't afford a single error. [documents.gates] in assay.toml:
@@ -244,13 +286,15 @@ def check_gates(now: Optional[dict], before: Optional[dict], gates: Optional[dic
         line_items = { max_drop = 0.02 }    # row F1 may fall at most 2 points below the baseline
 
     max_errors (values wrong, missing or invented; for line items, documents with a row wrong),
-    min_accuracy (the share right), min_precision, min_recall, min_f1, and max_drop (F1 below the
-    baseline's). `document` gates the documents with every field right, `critical` the critical
+    min_accuracy (the share right), min_precision, min_recall, min_f1, and max_drop: the drop from
+    the baseline tolerated, tested on the documents in both runs (a paired t interval on each
+    document's F1). It fails when even the optimistic end of the interval is a bigger drop, and
+    warns (could be worse: add documents) when only the pessimistic end is, as release gates do. `document` gates the documents with every field right, `critical` the critical
     values (score_document critical=): critical = { min_accuracy = 0.999 }, and
     `document[facet=value]` one slice of documents (score_document facets=):
     "document[template_seen=unseen]" = { min_accuracy = 0.9 }. `stability` gates the fields with the
     same value on every attempt (assay test --repeat): stability = { min_accuracy = 0.99 }. Every line-items
-    table is gated at max_drop = TABLE_DROP unless configured (`line_items = {}` turns it off).
+    table is gated at max_drop = TABLE_TOLERANCE unless configured (`line_items = {}` turns it off).
     A configured field this run didn't score fails: a gate can't pass on nothing.
     [{"field", "rule", "value", "limit", "was", "passed", "why", "default"}]."""
     if not now or not (now.get("fields") or now.get("checked")):
@@ -258,7 +302,7 @@ def check_gates(now: Optional[dict], before: Optional[dict], gates: Optional[dic
     fields, prev = {**now["fields"], **_whole(now)}, {**((before or {}).get("fields") or {}), **_whole(before or {})}
     rules = {k: dict(v) for k, v in (gates or {}).items()}
     defaults = {k for k, v in fields.items() if v.get("table") and k not in rules}
-    rules.update({k: {"max_drop": TABLE_DROP} for k in defaults})
+    rules.update({k: {"max_drop": TABLE_TOLERANCE} for k in defaults})
     out = []
     for name, rule in sorted(rules.items()):
         f = fields.get(name)
@@ -275,10 +319,18 @@ def check_gates(now: Optional[dict], before: Optional[dict], gates: Optional[dic
                 was = (prev.get(name) or {}).get("f1")
                 if was is None or f.get("f1") is None:
                     continue  # nothing to compare with yet
-                drop = was - f["f1"]
-                g.update(value=f["f1"], was=was, passed=drop <= limit + 1e-9,
-                         why=f"{name}: F1 {_pct(f['f1'])}, was {_pct(was)}: down {drop * 100:.1f} points, "
-                             f"at most {limit * 100:g} allowed")
+                d = paired_drop(f.get("per_case"), (prev.get(name) or {}).get("per_case"))
+                if d is None:
+                    continue  # fewer than two documents in both runs: nothing to test
+                point, lo, hi, n = d
+                surely, maybe = lo > limit + 1e-9, hi > limit + 1e-9
+                g.update(value=f["f1"], was=was, passed=not surely, unsure=maybe and not surely, drop=point,
+                         interval=(lo, hi), n=n,
+                         why=f"{name}: F1 {_pct(f['f1'])}, was {_pct(was)}; per document down {point * 100:.1f} "
+                             f"points (95% interval {lo * 100:.1f} to {hi * 100:.1f}, {n} documents), "
+                             + (f"surely more than the {limit * 100:g} allowed" if surely else
+                                f"could be more than the {limit * 100:g} allowed: add documents to tell" if maybe
+                                else f"within the {limit * 100:g} allowed"))
             else:
                 metric = key[len("min_"):]
                 v = f.get(metric)
@@ -296,8 +348,10 @@ def _gate_lines(now: dict, before: Optional[dict], cfg: Optional[dict]) -> List[
     if not gates:
         return []
     bad = [g for g in gates if g["passed"] is False]
+    unsure = [g for g in gates if g.get("unsure")]
     head = f"Gates        {len(gates) - len(bad)} of {len(gates)} held"
-    return [head + (":" if bad else "")] + [f"  failed: {g['why']}" for g in bad]
+    return [head + (":" if bad or unsure else "")] + [f"  failed: {g['why']}" for g in bad] + \
+        [f"  unsure: {g['why']}" for g in unsure]
 
 
 def _stability(repeats: Dict[tuple, List[tuple]]) -> Optional[dict]:
@@ -510,28 +564,29 @@ def _stability_lines(s: Optional[dict], b: Optional[dict]) -> List[str]:
     return out
 
 
-SLICE_DROP = 0.05  # a slice whose zero-error share falls this much is named as worse
-
-
 def _slice_lines(now: Optional[dict], before: Optional[dict]) -> List[str]:
     """Each facet's slices (score_document facets=): documents with zero errors, field accuracy
     and cell F1, against the baseline's; the ones that got worse first, since an average that
     held can hide a slice that didn't."""
     if not now:
         return []
+    ch = slice_changes(now, before)
     rows = []
     for name, s in now.items():
         was = ((before or {}).get(name) or {}).get("zero_errors")
         drop = was - s["zero_errors"] if was is not None else 0.0
         rows.append((-drop, name, s, was))
-    rows.sort(key=lambda r: (r[0], r[1]))
-    worse = [r for r in rows if -r[0] >= SLICE_DROP]
+    rows.sort(key=lambda r: (not ch.get(r[1], {}).get("worse"), r[0], r[1]))  # worse beyond chance first
+    worse = [r for r in rows if ch.get(r[1], {}).get("worse")]
     out = [f"Slices       {len(rows)} by facet · documents with zero errors"
-           + (f" · worse: {', '.join(r[1] for r in worse[:3])}" if worse else "")]
+           + (f" · worse beyond chance: {', '.join(r[1] for r in worse[:3])}" if worse else "")]
     width = max(len(r[1]) for r in rows[:12])
     for d, name, s, was in rows[:12]:
-        change = "" if was is None or abs(was - s["zero_errors"]) < 0.0005 else \
-            f" (was {_pct(was)}{', down ' + format(-d * 100, '.1f') + ' points' if -d >= SLICE_DROP else ''})"
+        c = ch.get(name) or {}
+        verdict = "" if -d <= 0 or not c else \
+            f", down {-d * 100:.1f} points: worse beyond chance, p {c['q']:.3f}" if c.get("worse") else \
+            f", down {-d * 100:.1f} points, within chance (p {c['q']:.2f}, {c['lost']} of {c['n']} documents)"
+        change = "" if was is None or abs(was - s["zero_errors"]) < 0.0005 else f" (was {_pct(was)}{verdict})"
         out.append(f"  {name:<{width}}  {s['n']:>4} · zero errors {_pct(s['zero_errors'])}{change}"
                    + (f" · field accuracy {_pct(s['accuracy'])}" if s.get("accuracy") is not None else "")
                    + (f" · cell F1 {_pct(s['cell_f1'])}" if s.get("cell_f1") is not None else ""))
@@ -802,14 +857,13 @@ def markdown(now: dict, before: Optional[dict] = None, cfg: Optional[dict] = Non
                    key=lambda kv: kv[1]["recall"])[:3]
     if worst:
         s += " · lowest recall: " + ", ".join(f"{k} {_pct(v['recall'])}" for k, v in worst)
-    was = (before or {}).get("slices") or {}
-    drops = {k: was[k]["zero_errors"] - v["zero_errors"] for k, v in (now.get("slices") or {}).items() if k in was}
-    worse = sorted((k for k, d in drops.items() if d >= SLICE_DROP), key=lambda k: (-drops[k], k))  # worst first
+    ch = slice_changes(now.get("slices"), (before or {}).get("slices"))
+    worse = sorted((k for k, c in ch.items() if c["worse"]), key=lambda k: (ch[k]["q"], k))  # clearest first
     st = now.get("stability")
     if st and st["same"] < st["fields"]:
         s += f" · same value every attempt {_pct(st['same'] / st['fields'])}"
     if worse:
-        s += " · slices worse: " + ", ".join(worse[:3])
+        s += " · slices worse beyond chance: " + ", ".join(worse[:3])
     bad = [g for g in check_gates(now, before, (cfg or {}).get("gates")) if g["passed"] is False]
     if bad:
         s += " · gates failed: " + "; ".join(g["why"] for g in bad[:3])

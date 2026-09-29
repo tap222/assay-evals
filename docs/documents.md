@@ -169,18 +169,21 @@ score_document(assay_case, expected, extracted, SCHEMA, facets={
 })
 ```
 
-The report compares every slice with the baseline, the ones that got worse first:
+The report compares every slice with the baseline, the ones worse beyond chance first:
 
 ```
-Documents    20 · all fields correct 16/20 (80.0%, was 100%) · weighted field accuracy 93.3% ...
-Slices       4 by facet · documents with zero errors · worse: template_seen=unseen, source=digital, source=scanned
-  template_seen=unseen     4 · zero errors 0% (was 100%, down 100.0 points) · field accuracy 66.7% · cell F1 66.7%
-  source=digital          10 · zero errors 80.0% (was 100%, down 20.0 points) · field accuracy 93.3% · cell F1 93.3%
+Documents    40 · all fields correct 32/40 (80.0%, was 100%) · weighted field accuracy 93.3% ...
+Slices       4 by facet · documents with zero errors · worse beyond chance: template_seen=unseen
+  template_seen=unseen     8 · zero errors 0% (was 100%, down 100.0 points: worse beyond chance, p 0.016) · ...
+  source=digital          20 · zero errors 80.0% (was 100%, down 20.0 points, within chance (p 0.08, 4 of 20 documents)) · ...
   ...
 ```
 
-A slice is named as worse when its share of documents with zero errors falls 5 points or more;
-the PR comment names them too. `template_seen` is yours to set, since only you know what the
+A slice is called worse only when the drop is beyond chance: on the documents in both runs, an
+exact McNemar test (those right before and wrong now, against the reverse), with
+Benjamini-Hochberg across the slices so that many slices don't make false alarms. A drop that
+could be chance is shown, with its p and how many documents it rests on: four documents all
+flipping is 1 in 16 by luck, not proof. The PR comment names the slices worse beyond chance. `template_seen` is yours to set, since only you know what the
 model was built or tuned on. The template id itself isn't a slice (one per supplier is too many
 to read); `template_seen` and `template_new` are. Gate a slice like any field:
 
@@ -601,7 +604,7 @@ Gates are per field, beside the per-case regressions:
 [documents.gates]
 tax_number = { max_errors = 0 }                   # one wrong value fails the run, baseline or not
 total      = { max_errors = 0, min_recall = 0.99 }
-line_items = { max_drop = 0.02 }                  # row F1 at most 2 points below the baseline's
+line_items = { max_drop = 0.02 }                  # row F1 surely no more than 2 points below the baseline's
 vendor     = { min_precision = 0.95 }
 ```
 
@@ -610,9 +613,16 @@ vendor     = { min_precision = 0.95 }
 | `max_errors` | more values than this are wrong, missing or invented in the run (for line items: documents with a row wrong) |
 | `min_accuracy` | the share right is below this; `document` gates documents with every field right, `critical` the critical values |
 | `min_precision`, `min_recall`, `min_f1` | the field's precision, recall or F1 over the run is below this |
-| `max_drop` | the field's F1 is more than this below the baseline's (skipped until there is one) |
+| `max_drop` | the field's F1 is surely more than this below the baseline's: tested on the documents in both runs (below). Skipped until there is a baseline |
 
-**Line items are gated by default:** every line-items table at `max_drop = 0.05`, so a collapse
+**`max_drop` is tested, not compared:** each document in both runs is scored before and now, and
+a paired t interval (95%) on the change says how far it fell. The document is the unit, so one
+long table doesn't outweigh the rest. The gate fails when even the optimistic end of the
+interval is a bigger drop than allowed, and warns ("unsure: ... could be more than the 2
+allowed: add documents to tell") when only the pessimistic end is, as release gates do. A drop
+on two documents out of six won't fail a PR; the same drop on every document will.
+
+**Line items are gated by default:** every line-items table at `max_drop = 0.02`, so a collapse
 fails the run with nothing configured. Give it a rule of your own to change that, or
 `line_items = {}` to turn it off. A configured field the run didn't score fails: a gate can't pass
 on nothing. Weights (`Text(weight=3)`) say what an error costs in the average; gates say which
@@ -620,9 +630,9 @@ errors the average mustn't hide.
 
 ```
 Gates        0 of 1 held:
-  failed: line_items: F1 20.0%, was 90.0%: down 70.0 points, at most 5 allowed
+  failed: line_items: F1 20.0%, was 90.0%; per document down 70.0 points (95% interval 70.0 to 70.0, 4 documents), surely more than the 2 allowed
 ...
-1 document gate failed: line_items: F1 20.0%, was 90.0%: down 70.0 points, at most 5 allowed.
+1 document gate failed: line_items: F1 20.0%, was 90.0%; per document down 70.0 points (95% interval 70.0 to 70.0, 4 documents), surely more than the 2 allowed.
 Failed.
 ```
 
