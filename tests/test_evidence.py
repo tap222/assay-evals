@@ -115,3 +115,30 @@ def test_a_regression_with_nothing_changed_on_your_side(project, monkeypatch, ca
     (project / "kinds.py").write_text(KINDS + "\n# a change\n")  # now something did change
     assert main(["test"]) == 1
     assert "Nothing on your side changed" not in capsys.readouterr().out
+
+
+PROMPTED = '''
+import os
+import assay_sdk as assay
+assay.init()
+with assay.run("support", test="q1") as r:
+    r.llm(model="m", prompt=assay.prompt("support", os.environ["PROMPT"]))
+    r.answer("x")
+    r.check("helpful", "fail" if os.environ["PROMPT"] == "2" else "pass")
+'''
+
+
+def test_a_new_prompt_version_is_a_change_on_your_side(project, monkeypatch, capsys):
+    """A prompt picked at run time (an env var, a registry) changes no file, and is still your change."""
+    (project / "prompted.py").write_text(PROMPTED)
+    (project / "assay.toml").write_text(f'[test]\ncommand = "{sys.executable} prompted.py"\n')
+    git = lambda *a: subprocess.run(["git", *a], cwd=project, check=True, capture_output=True)
+    git("init", "-q")
+    git("-c", "user.email=a@b.c", "-c", "user.name=a", "add", "-A")
+    git("-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "-qm", "x")
+    monkeypatch.setenv("PROMPT", "1")
+    assert main(["test"]) == 0
+    capsys.readouterr()
+    monkeypatch.setenv("PROMPT", "2")
+    assert main(["test"]) == 1
+    assert "Nothing on your side changed" not in capsys.readouterr().out

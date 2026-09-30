@@ -1,37 +1,21 @@
 <h1 align="center">Assay</h1>
 
 <p align="center">
-  <strong>Behavioral regression testing for AI apps and agents.</strong><br>
-  Change a prompt, a model, a tool or the code, and Assay tells you what your AI now does
-  differently, whether the change is real, and whether to trust the result.
+  <strong>Your prompt change broke 3 cases. Assay tells you which ones, what changed, and whether it's real or noise.</strong><br>
+  Behavioral regression testing for AI apps and agents, as a pytest plugin and a PR check.
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/assay-server/"><img src="https://img.shields.io/pypi/v/assay-server?label=assay-server&color=blue" alt="assay-server on PyPI"></a>
-  <a href="https://pypi.org/project/assay-evals/"><img src="https://img.shields.io/pypi/v/assay-evals?label=assay-evals%20SDK&color=blue" alt="assay-evals on PyPI"></a>
+  <a href="https://pypi.org/project/assay-server/"><img src="https://img.shields.io/pypi/v/assay-server?label=pypi&color=blue" alt="assay-server on PyPI"></a>
   <a href="https://pypi.org/project/assay-server/"><img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python versions"></a>
   <a href="https://pepy.tech/project/assay-server"><img src="https://img.shields.io/pepy/dt/assay-server?label=downloads" alt="Downloads"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/tap222/docai-eval" alt="License: MIT"></a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/tap222/docai-eval/actions/workflows/publish-server.yml"><img src="https://img.shields.io/github/actions/workflow/status/tap222/docai-eval/publish-server.yml?label=release" alt="Release workflow"></a>
-  <a href="https://github.com/tap222/docai-eval/commits/main"><img src="https://img.shields.io/github/last-commit/tap222/docai-eval" alt="Last commit"></a>
-  <a href="https://github.com/tap222/docai-eval/issues"><img src="https://img.shields.io/github/issues/tap222/docai-eval" alt="Open issues"></a>
   <a href="https://github.com/tap222/docai-eval/stargazers"><img src="https://img.shields.io/github/stars/tap222/docai-eval?style=flat" alt="GitHub stars"></a>
-  <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: alpha">
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/pytest-plugin-0A9EDC?logo=pytest&logoColor=white" alt="pytest plugin">
-  <img src="https://img.shields.io/badge/GitHub%20Action-PR%20gate-2088FF?logo=githubactions&logoColor=white" alt="GitHub Action">
-  <img src="https://img.shields.io/badge/FastAPI-dashboard-009688?logo=fastapi&logoColor=white" alt="FastAPI dashboard">
-  <img src="https://img.shields.io/badge/works%20with-DeepEval%20%7C%20RAGAS-6f42c1" alt="Works with DeepEval and RAGAS">
-  <img src="https://img.shields.io/badge/any-model%20provider-555" alt="Any model provider">
 </p>
 
 <p align="center">
   <a href="#quickstart"><strong>Quickstart</strong></a> ·
+  <a href="examples/prompt-regression"><strong>1-minute demo</strong></a> ·
   <a href="#features"><strong>Features</strong></a> ·
   <a href="#document-extraction"><strong>Document extraction</strong></a> ·
   <a href="#ci-and-pull-requests"><strong>CI</strong></a> ·
@@ -44,6 +28,7 @@
 ## Contents
 
 - [Why Assay](#why-assay)
+- [Try it in a minute](#try-it-in-a-minute)
 - [Quickstart](#quickstart)
 - [Features](#features)
 - [Document extraction](#document-extraction)
@@ -66,6 +51,19 @@ answers three questions on every change:
 2. **Is the change real, or noise?** Repeated attempts separate chance from a true regression.
 3. **Can the result be trusted?** Checks a pull request can't loosen, and judges calibrated
    against people's labels.
+
+## Try it in a minute
+
+No API key and no account. One line added to a prompt makes an agent skip an approval before a
+refund, and Assay catches it:
+
+```bash
+pip install assay-server pytest
+git clone https://github.com/tap222/docai-eval && cd docai-eval/examples/prompt-regression
+./demo.sh
+```
+
+See [examples/prompt-regression](examples/prompt-regression) for what it shows.
 
 ## Quickstart
 

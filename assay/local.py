@@ -2411,7 +2411,11 @@ def revision(root: Path, engine, run_id: str) -> dict:
     changes = (_git(root, "diff", "HEAD", *keep) or "") + (_git(root, "status", "--porcelain", *keep) or "") \
         if commit else ""
     cfg = (root / CONFIG).read_text() if (root / CONFIG).exists() else ""
-    lineage = sorted({json.dumps(r.lineage, sort_keys=True) for r in _rows(engine, run_id) if r.lineage})
+    rows = _rows(engine, run_id)
+    lineage = {json.dumps(r.lineage, sort_keys=True) for r in rows if r.lineage}
+    for s in _setups(engine, TENANT, [r.document_id for r in rows]).values():  # prompt@version and model per call
+        lineage |= {f"prompt:{p}" for p in s["prompts"]} | {f"model:{m}" for m in s["models"]}
+    lineage = sorted(lineage)
     return {"commit": commit, "changes": h(changes) if changes.strip() else None, "config": h(cfg),
             "prompts": h("|".join(lineage)) if lineage else None}
 

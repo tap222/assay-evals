@@ -8,9 +8,10 @@ license-files = ["LICENSE"]
 authors = [{ name = "tap222" }]
 requires-python = ">=3.9"
 dependencies = []
-keywords = ["llm", "agents", "evaluation", "observability", "tracing", "ai"]
+keywords = ["llm", "evals", "pytest", "regression-testing", "agents", "evaluation", "ai"]
 classifiers = [
   "Development Status :: 3 - Alpha",
+  "Framework :: Pytest",
   "Intended Audience :: Developers",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",

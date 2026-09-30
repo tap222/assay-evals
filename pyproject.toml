@@ -7,7 +7,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "tap222" }]
 requires-python = ">=3.10"
-keywords = ["llm", "agents", "evaluation", "observability", "document-ai", "ai"]
+keywords = ["llm", "evals", "pytest", "regression-testing", "agents", "evaluation", "ci", "document-ai", "ai"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Framework :: FastAPI",
