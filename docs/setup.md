@@ -14,7 +14,7 @@ Setting up Assay has two stages. Installing it is done once by someone technical
 | Option | Steps | Good for |
 |---|---|---|
 | **Docker** (recommended) | `git clone https://github.com/tap222/assay-evals && cd assay-evals`<br>`docker build -t assay .`<br>`docker run -d -p 8400:8400 -v assay-data:/data assay` | a company server or VM |
-| **Vercel** | Import the repo at vercel.com/new (no build settings). Add a Postgres database, e.g. Neon from the Vercel marketplace, and set `ASSAY_STORE_URL` to it | a quick hosted setup |
+| **Vercel** | Import the repo at vercel.com/new (no build settings). Add a Postgres database, e.g. Neon from the Vercel marketplace: its `DATABASE_URL` is used as the store | a quick hosted setup |
 | **Laptop trial** | `pip install assay-server`<br>`assay demo`<br>`assay serve` → http://127.0.0.1:8400 | trying it with demo data |
 
 On Vercel without a database, data is lost whenever an instance restarts. Use that for
@@ -294,8 +294,11 @@ because Vercel detects the FastAPI `app` in the root `app.py`.
 - **With no environment variables**, results go to SQLite in `/tmp`. Each fresh instance
   loads the demo on its first request, and the data is lost when the instance is recycled.
   That's fine for a showcase.
-- **For real use**, set `ASSAY_STORE_URL` to a Postgres URL, for example from Neon in the
-  Vercel marketplace. Also set `ASSAY_SOURCE_URL` and `ASSAY_SOURCE_MAPPING`, or use events.
+- **With Postgres**, the data persists and a cold start is fast: add Neon from the Vercel
+  marketplace, and the `DATABASE_URL` it sets is the store (`ASSAY_STORE_URL`, if set, wins;
+  `postgres://` URLs get the psycopg driver). The demo is loaded once, when the database is
+  empty; `ASSAY_AUTO_DEMO=0` turns that off. For real use, also set `ASSAY_SOURCE_URL` and
+  `ASSAY_SOURCE_MAPPING`, or use events.
 - **Scheduled runs:** serverless has no background process. Set `CRON_SECRET` (and
   `ASSAY_SCHEDULE_SOURCES` for scheduled measures), then add a `vercel.json` with
   `"crons": [{"path": "/v1/cron", "schedule": "0 6 * * *"}]`. Each call also marks quiet
