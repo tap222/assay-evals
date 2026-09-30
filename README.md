@@ -9,8 +9,8 @@
   <a href="https://pypi.org/project/assay-server/"><img src="https://img.shields.io/pypi/v/assay-server?label=pypi&color=blue" alt="assay-server on PyPI"></a>
   <a href="https://pypi.org/project/assay-server/"><img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python versions"></a>
   <a href="https://pepy.tech/project/assay-server"><img src="https://img.shields.io/pepy/dt/assay-server?label=downloads" alt="Downloads"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/tap222/docai-eval" alt="License: MIT"></a>
-  <a href="https://github.com/tap222/docai-eval/stargazers"><img src="https://img.shields.io/github/stars/tap222/docai-eval?style=flat" alt="GitHub stars"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/tap222/assay-evals" alt="License: MIT"></a>
+  <a href="https://github.com/tap222/assay-evals/stargazers"><img src="https://img.shields.io/github/stars/tap222/assay-evals?style=flat" alt="GitHub stars"></a>
 </p>
 
 <p align="center">
@@ -59,7 +59,7 @@ refund, and Assay catches it:
 
 ```bash
 pip install assay-server pytest
-git clone https://github.com/tap222/docai-eval && cd docai-eval/examples/prompt-regression
+git clone https://github.com/tap222/assay-evals && cd assay-evals/examples/prompt-regression
 ./demo.sh
 ```
 
@@ -198,7 +198,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - uses: tap222/docai-eval@main
+      - uses: tap222/assay-evals@main
         with:
           command: pytest --assay tests/ai
 ```
@@ -272,7 +272,7 @@ Where things live in this repository: [docs/layout.md](docs/layout.md).
 
 ## Contributing
 
-Issues and pull requests are welcome at [github.com/tap222/docai-eval](https://github.com/tap222/docai-eval/issues).
+Issues and pull requests are welcome at [github.com/tap222/assay-evals](https://github.com/tap222/assay-evals/issues).
 Run `pytest` before opening a PR, and update this README in the same PR as any feature change.
 
 ## License

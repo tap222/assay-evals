@@ -4,7 +4,7 @@
 #
 # Uses PyPI trusted publishing: no tokens are stored anywhere. One-time setup:
 #   1. pypi.org and test.pypi.org → Account → Publishing → Add a new pending publisher:
-#        project assay-evals · owner tap222 · repository docai-eval
+#        project assay-evals · owner tap222 · repository assay-evals
 #        workflow publish-sdk.yml · environment pypi (on test.pypi.org: testpypi)
 #   2. GitHub → Settings → Environments: create "testpypi" and "pypi";
 #      on "pypi", add yourself as a required reviewer, so the real release waits for your click.

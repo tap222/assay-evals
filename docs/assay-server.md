@@ -1,6 +1,6 @@
 # assay-server
 
-The [Assay](https://github.com/tap222/docai-eval) server: evaluation and observability for AI
+The [Assay](https://github.com/tap222/assay-evals) server: evaluation and observability for AI
 systems, meaning document-intelligence pipelines (OCR, classification, splitting, field
 extraction) and AI agents (reasoning, tool calls, state changes). This package includes
 the API, the dashboard, and a demo tenant. Python 3.10+.
@@ -36,5 +36,5 @@ assay keys create --tenant acme --scopes admin --name "acme admin"
 To send data to the server from your own code, use the SDK,
 [`assay-evals`](https://pypi.org/project/assay-evals/), which has no dependencies.
 
-The [setup guide](https://github.com/tap222/docai-eval/blob/main/docs/setup.md) also covers Docker,
+The [setup guide](https://github.com/tap222/assay-evals/blob/main/docs/setup.md) also covers Docker,
 Vercel, connecting your pipeline's database, and release gates.

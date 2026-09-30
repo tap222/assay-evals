@@ -13,7 +13,7 @@ Setting up Assay has two stages. Installing it is done once by someone technical
 
 | Option | Steps | Good for |
 |---|---|---|
-| **Docker** (recommended) | `git clone https://github.com/tap222/docai-eval && cd docai-eval`<br>`docker build -t assay .`<br>`docker run -d -p 8400:8400 -v assay-data:/data assay` | a company server or VM |
+| **Docker** (recommended) | `git clone https://github.com/tap222/assay-evals && cd assay-evals`<br>`docker build -t assay .`<br>`docker run -d -p 8400:8400 -v assay-data:/data assay` | a company server or VM |
 | **Vercel** | Import the repo at vercel.com/new (no build settings). Add a Postgres database, e.g. Neon from the Vercel marketplace, and set `ASSAY_STORE_URL` to it | a quick hosted setup |
 | **Laptop trial** | `pip install assay-server`<br>`assay demo`<br>`assay serve` → http://127.0.0.1:8400 | trying it with demo data |
 

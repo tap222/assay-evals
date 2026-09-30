@@ -22,10 +22,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/tap222/docai-eval"
-Documentation = "https://github.com/tap222/docai-eval/tree/main/sdk/python#readme"
-"Event schema" = "https://github.com/tap222/docai-eval/blob/main/docs/event-schema.md"
-Issues = "https://github.com/tap222/docai-eval/issues"
+Homepage = "https://github.com/tap222/assay-evals"
+Documentation = "https://github.com/tap222/assay-evals/tree/main/sdk/python#readme"
+"Event schema" = "https://github.com/tap222/assay-evals/blob/main/docs/event-schema.md"
+Issues = "https://github.com/tap222/assay-evals/issues"
 
 [project.entry-points.pytest11]
 assay = "assay_sdk.pytest_plugin"

@@ -1,7 +1,7 @@
 # assay-evals
 
 Record what your AI system does, and how it went, in
-[Assay](https://github.com/tap222/docai-eval): runs, agent steps, user feedback and test
+[Assay](https://github.com/tap222/assay-evals): runs, agent steps, user feedback and test
 results. Standard library only, Python 3.9+.
 
 ```bash
@@ -9,7 +9,7 @@ pip install assay-evals
 ```
 
 With an Assay server, events go there (see the
-[setup guide](https://github.com/tap222/docai-eval/blob/main/docs/setup.md)). Without one, they're
+[setup guide](https://github.com/tap222/assay-evals/blob/main/docs/setup.md)). Without one, they're
 recorded to a local file, so you can start with no account and no server (see
 "No server" below).
 
@@ -62,7 +62,7 @@ These options go to `init()`:
 - `path`: where to record when there's no server (see below).
 
 Events follow the
-[Assay event schema v1](https://github.com/tap222/docai-eval/blob/main/docs/event-schema.md). They stream to
+[Assay event schema v1](https://github.com/tap222/assay-evals/blob/main/docs/event-schema.md). They stream to
 `POST /v1/ingest` in the background, so a run that crashes still shows every step up to
 the crash.
 
@@ -329,4 +329,4 @@ run, prints Assay's report in pytest's summary, and exits 1 only when something 
 
 To test with it, `assay test` (in `assay-server`) runs your code with the SDK recording,
 checks each run against its `assay.expect(...)`, and compares with the last run that passed.
-See [Test your AI app locally](https://github.com/tap222/docai-eval/blob/main/docs/testing.md).
+See [Test your AI app locally](https://github.com/tap222/assay-evals/blob/main/docs/testing.md).

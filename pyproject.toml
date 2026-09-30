@@ -34,9 +34,9 @@ sso = ["pyjwt[crypto]>=2.8"]  # single sign-on (assay/sso.py): verifying the pro
 dev = ["pytest>=8", "httpx>=0.27"]
 
 [project.urls]
-Homepage = "https://github.com/tap222/docai-eval"
-Documentation = "https://github.com/tap222/docai-eval/blob/main/docs/setup.md"
-Issues = "https://github.com/tap222/docai-eval/issues"
+Homepage = "https://github.com/tap222/assay-evals"
+Documentation = "https://github.com/tap222/assay-evals/blob/main/docs/setup.md"
+Issues = "https://github.com/tap222/assay-evals/issues"
 
 [project.scripts]
 assay = "assay.__main__:main"
