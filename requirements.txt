@@ -3,3 +3,4 @@ uvicorn>=0.27
 sqlalchemy>=2.0
 pydantic>=2.5
 psycopg[binary]>=3.1
+./sdk/python  # the SDK (assay_sdk) from this commit: the server imports it, and PyPI can lag behind
