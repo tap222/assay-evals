@@ -3,4 +3,5 @@ Dockerfile
 *.db
 # Vercel installs requirements.txt (the SDK from ./sdk/python). With pyproject.toml present it installs
 # that instead, and gets assay-evals from PyPI, older than the server needs. The app runs from the source.
-pyproject.toml
+# Only the root one: sdk/python/pyproject.toml is how requirements.txt installs the SDK.
+/pyproject.toml
