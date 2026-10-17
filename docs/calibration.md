@@ -231,6 +231,11 @@ Another judge over the same items says how often two judges agree, which of them
 better, and where they disagree by two points or more. That's usually where the rubric is
 ambiguous, and it's the first place to tighten it.
 
+`assay rejudge` is the quick version on a run you already have: the same answers, asked again
+of the same judge or a new one, with agreement and flips ([judging a saved run
+again](repeats.md#judging-a-saved-run-again)). Calibration needs labels a person gave; re-judging
+needs none, and says only how a judge moves, not whether it's right.
+
 ## Drift: the same judge, scoring differently
 
 A provider can change a model without changing its name. A judge that became stricter overnight

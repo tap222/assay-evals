@@ -190,10 +190,6 @@ User stories: [US-16](user-stories.md#us-16), [US-17](user-stories.md#us-17).
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send
   them to `POST /v1/ingest` directly, or use OpenTelemetry.
-- **Judging a saved run again:** `evaluate(rejudge=)` asks the judge again during the run, but
-  there's no command that runs a frozen judge (model and prompt) on a past run's saved outputs,
-  with no calls to the AI. That would measure the judge's own variance apart from a model swap,
-  and test a new judge or rubric on the same answers before switching to it.
 - **Paid tool calls (x402):** an agent that pays for an API gets a `402` challenge, pays, and
   retries. A check should read the challenge (price, network, the payment flow it declares) and
   compare it with what the test expects, then check the paid response against its schema and
@@ -203,14 +199,6 @@ User stories: [US-16](user-stories.md#us-16), [US-17](user-stories.md#us-17).
 - **The same request sent twice:** `faults(tool="lost")` and `expect(run).at_most_once()` catch an
   agent that pays again after a lost reply. A client that sends the whole request again (a
   double click, a webhook delivered twice) isn't simulated yet.
-- **Paired pass and fail counts for every run:** the run-level change is a paired interval on
-  pass rates. It should also count the cases that went from pass to fail and from fail to pass,
-  with an exact McNemar test on those two numbers, as document runs already do per slice. A
-  case with repeats needs a rule to count as one pass or fail (most attempts passing, by
-  default), shown in the report.
-- **Code checks and judges apart in the verdict:** deterministic checks already outrank a judge
-  when the two disagree. The verdict should also report them separately, code checks first, so
-  a model swap has a signal no judge's noise reaches, with judged checks as the second line.
 - **One release decision across both gates:** the slice gate (`/v1/gates/evaluate`) and the
   stability gate (`/v1/evals/runs/{run}/stability`) answer different questions and are called
   separately. A release should get one decision table: every gate as a row (quality per slice,

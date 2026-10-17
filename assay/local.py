@@ -1099,7 +1099,9 @@ def compare(engine, run_id: str, baseline: Optional[str], tolerance: float, beha
     rows = [r for r in rows if r.result_id not in found and flaky.check_key(r) not in skip]
     base_found = audit.audit_rows(engine, tenant, base_rows)  # once: per row, it was n² on a big run
     base_rows = [r for r in base_rows if r.result_id not in base_found]
+    from assay.upkeep import is_judge
     out = {"stability": a["stability"], "fields": field_rates(rows, base_rows), "failing": failing(rows),
+           "judged": {(r.case_id, r.field or "result") for r in rows if is_judge(r)},
            "attempts": attempts(rows), "base_attempts": attempts(base_rows),
            "not_judged": not_judged, **_behavior_changes(engine, run_id, baseline, ran, behavior_cfg, tenant),
            "judge_changed": judge_changes(rows, base_rows), **routing(engine, tenant, rows, base_rows)}
@@ -1823,6 +1825,43 @@ def verdict(result: dict, has_baseline: bool) -> Tuple[bool, dict]:
         and not gates_failed(result), c
 
 
+def witnesses(result: dict, c: dict) -> Optional[dict]:
+    """Code checks and judged checks apart, code checks first: a model swap gets a signal no judge's
+    noise reaches. None when the run has only one kind."""
+    judged, att = result.get("judged") or set(), result["attempts"]
+    kinds = {"code": [k for k in att if k not in judged], "judged": [k for k in att if k in judged]}
+    if not kinds["code"] or not kinds["judged"]:
+        return None
+    out = {}
+    for kind, keys in kinds.items():
+        mine = set(keys)
+        x = {"checks": len(keys), "passing": sum(1 for k in keys if all(att[k]))}
+        for name, items in (("failing", c["problems"]), ("needs reruns", c["unsure"]), ("flaky", c["flaky"]),
+                            ("judge unstable", c["judge_unstable"])):
+            x[name] = sum(1 for i in items if (i["case_id"], i["field"]) in mine)
+        out[kind] = x
+    code, judge = out["code"], out["judged"]
+    moved = lambda x: x["failing"] + x["needs reruns"]
+    out["note"] = ("Code checks held: what moved is judged. Check the judge before the AI (`assay rejudge`)."
+                   if moved(judge) and not moved(code) else
+                   "Code checks moved, and no judge decides those: the AI's behavior changed."
+                   if moved(code) else None)
+    return out
+
+
+def paired_text(pc: dict) -> str:
+    """The cases in both runs, each one pass or fail, and whether more broke than were fixed beyond chance."""
+    lost, gained = len(pc["lost"]), len(pc["gained"])
+    sure = "more broke than were fixed, beyond chance" if pc["p"] <= 0.05 else "within chance"
+    return (f"{_n(pc['cases'], 'case')} in both runs: {lost} pass → fail, {gained} fail → pass "
+            f"(exact McNemar p = {pc['p']:.2g}, {sure}; a case passes when each check passes most attempts)")
+
+
+def witness_text(x: dict) -> str:
+    rest = [f"{x[k]} {k}" for k in ("failing", "needs reruns", "flaky", "judge unstable") if x[k]]
+    return f"{x['passing']}/{x['checks']} passing" + (" · " + ", ".join(rest) if rest else "")
+
+
 def gates_failed(result: dict) -> List[dict]:
     """The documents' per-field gates that failed ([documents.gates]; line items by default)."""
     from assay import documents
@@ -2304,6 +2343,13 @@ def summary_markdown(run_id: str, result: dict, code: int, against: Optional[str
     head = "Checks weakened: this PR loosens the checks that judge it" if policy and policy["weakened"] else \
         HEADLINES.get(code, "AI regression detected")
     out = [MARKER, f"## {head}", "", " · ".join(counts), ""]
+    w = result.get("_witnesses")
+    if w:
+        out += [f"Code checks: {witness_text(w['code'])} · Judged checks: {witness_text(w['judged'])}"
+                + (f". {w['note']}" if w["note"] else ""), ""]
+    pc = result.get("_paired")
+    if pc and (pc["lost"] or pc["gained"]):
+        out += [f"Paired cases: {paired_text(pc)}", ""]
     if policy and policy["changes"]:
         title = ('Policy changes (not applied: add the `assay-policy-change` label to accept them)' if policy['weakened']
                  else 'Policy changes (accepted)' if policy['accepted']
@@ -2403,6 +2449,13 @@ def report(run_id: str, baseline: Optional[str], result: dict, repeat: int, code
     out += [f"{_n(cases, 'case')} · {each} · {against}", ""]
     result["summary"] = summarize(result, c, baseline)
     out += summary_block(result["summary"])
+    w = result["_witnesses"] = witnesses(result, c)
+    if w:
+        out += [f"Code checks    {witness_text(w['code'])}", f"Judged checks  {witness_text(w['judged'])}"]
+        out += ([_paint(w["note"], "dim")] if w["note"] else []) + [""]
+    pc = result["_paired"] = flaky.paired_cases(result["attempts"], result["base_attempts"]) if baseline else None
+    if pc and (pc["lost"] or pc["gained"]):
+        out += [_paint("Paired cases", "bold"), f"  {paired_text(pc)}", ""]
     everywhere = (result.get("setup") or {}).get("everywhere") or []
     if everywhere:
         out += [_paint("Changed in every case", "bold")] + [f"  {change_text(x)}" for x in everywhere] + [""]

@@ -260,7 +260,7 @@ def slice_changes(now: Optional[dict], before: Optional[dict], alpha: float = 0.
     McNemar test on the documents in both runs (right before and wrong now, against the reverse),
     Benjamini-Hochberg across the slices so many slices don't make false alarms.
     {slice: {"drop", "was", "p", "q", "worse", "lost", "gained", "n"}}."""
-    from assay.flaky import _binom_cdf, bh
+    from assay.flaky import bh, mcnemar
     out = {}
     for name, s in (now or {}).items():
         b = (before or {}).get(name)
@@ -269,7 +269,7 @@ def slice_changes(now: Optional[dict], before: Optional[dict], alpha: float = 0.
         common = set(s["cases"]) & set(b["cases"])
         lost = sum(1 for c in common if b["cases"][c] and not s["cases"][c])
         gained = sum(1 for c in common if s["cases"][c] and not b["cases"][c])
-        p = 1.0 if not lost else 1 - _binom_cdf(lost - 1, lost + gained, 0.5)  # P(X >= lost)
+        p = mcnemar(lost, gained)
         out[name] = {"drop": b["zero_errors"] - s["zero_errors"], "was": b["zero_errors"], "p": p,
                      "lost": lost, "gained": gained, "n": len(common)}
     names = sorted(out)

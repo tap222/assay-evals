@@ -89,6 +89,60 @@ when the judge is what varies. A judge that agreed with itself every time leaves
 flaky, or needing reruns, as before. `assay calibrate` measures a judge's consistency on a
 labeled set ahead of time; `rejudge` measures it on this run's answers.
 
+## Judging a saved run again
+
+`rejudge=` asks the judge again during the run. `assay rejudge` asks it again afterwards, about the
+answers a run already saved, with no calls to the AI:
+
+```
+assay rejudge --judge evals/judges.py:helpful --times 3
+Re-judged 24 saved answers from t-20261017-101500-120 with evals/judges.py:helpful, 3 times each. No calls to the AI.
+
+Saved verdicts came from claude-haiku-5-5 / helpful@2.
+Agrees with the saved verdicts  21/24 (88%), Cohen's kappa 0.71
+  pass → fail 2   fail → pass 1
+Splits with itself  2 of 24 answers, asked 3 times
+```
+
+- **The same judge, frozen** (model and prompt), measures its own noise. A model swap that moved
+  fewer verdicts than the judge moves on its own hasn't shown anything.
+- **A new judge or rubric** is tried on the same answers before switching to it. Cohen's kappa
+  discounts the agreement two judges get by chance; `--min-agreement 0.9` exits 1 below that, for
+  CI.
+- **What it needs:** checks recorded with what the judge saw, `evaluate(judge, ..., inputs={"question":
+  q, "answer": a})`. The judge is called as `judge(**inputs)`. `--run` picks a run (default: the
+  last), `--field` one check, `--format json` the whole result.
+- Answers it couldn't give a verdict on are counted apart, never as flips.
+
+## Code checks first, then judged checks
+
+When a run has both, the report gives them a line each:
+
+```
+Code checks    40/40 passing
+Judged checks  12/15 passing · 3 failing
+Code checks held: what moved is judged. Check the judge before the AI (`assay rejudge`).
+```
+
+A code check (an exact value, a tool that must or mustn't be called, a schema) has no judge's
+noise in it, so after a model swap it's the first signal to read. A check counts as judged when it
+was recorded with `judge_model` or `judge_prompt`, or its evaluator's name says judge. When code
+checks moved, the note says the AI's behavior changed, whatever the judges say.
+
+## Cases that broke, and cases that were fixed
+
+The run-level change is a paired interval on pass rates. The report also counts each case in both
+runs as one pass or fail, and how many went each way:
+
+```
+Paired cases
+  40 cases in both runs: 6 pass → fail, 1 fail → pass (exact McNemar p = 0.062, within chance; ...)
+```
+
+A case passes when each of its checks passes on most of its attempts (more than half: a tie isn't
+most). The exact McNemar test asks whether more broke than were fixed beyond chance; cases that
+didn't change say nothing either way. It's shown, not a gate: the two gates above decide the run.
+
 ## More attempts only where they're needed
 
 "Inconclusive: rerun with more attempts" leaves the rerun to you, and a rerun repeats every case,

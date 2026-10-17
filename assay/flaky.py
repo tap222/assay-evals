@@ -114,6 +114,31 @@ def fisher_lower(a: int, b: int, c: int, d: int) -> float:
     return min(1.0, sum(math.comb(n2, x) * math.comb(n1, k - x) for x in range(max(0, k - n1), c + 1)) / denom)
 
 
+def mcnemar(lost: int, gained: int) -> float:
+    """Exact one-sided McNemar p that more went from pass to fail (lost) than the reverse (gained)
+    by chance: P(X >= lost) for X ~ Binomial(lost + gained, 1/2). Cases that didn't change say nothing."""
+    n = lost + gained
+    return sum(math.comb(n, k) for k in range(lost, n + 1)) / 2 ** n
+
+
+def paired_cases(now: Dict[tuple, List[bool]], before: Dict[tuple, List[bool]]) -> Optional[dict]:
+    """Each case in both runs as one pass or fail: every check passing on most of its attempts
+    (more than half). Then the cases that went from pass to fail and from fail to pass, with an
+    exact McNemar test on those two numbers. None when no case is in both runs."""
+    def by_case(att):
+        out: Dict[str, bool] = {}
+        for (case, _), a in att.items():
+            out[case] = out.get(case, True) and 2 * sum(a) > len(a)
+        return out
+    a, b = by_case(now), by_case(before)
+    common = sorted(set(a) & set(b))
+    if not common:
+        return None
+    lost = [c for c in common if b[c] and not a[c]]
+    gained = [c for c in common if a[c] and not b[c]]
+    return {"cases": len(common), "lost": lost, "gained": gained, "p": mcnemar(len(lost), len(gained))}
+
+
 def bh(pvalues: List[float]) -> List[float]:
     """Benjamini-Hochberg adjusted p-values (q-values), in the input order."""
     m = len(pvalues)
