@@ -190,6 +190,52 @@ User stories: [US-16](user-stories.md#us-16), [US-17](user-stories.md#us-17).
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send
   them to `POST /v1/ingest` directly, or use OpenTelemetry.
+- **Agent security: scope tests and security alerts.** An agent given credentials and a task can
+  still reach what it wasn't meant to, and the organizations it happened to often didn't notice.
+  Today a `never` contract, `must_not_call`, `must_get_approval_before`, the injection check and
+  the personal-data check catch it in tests, and recorded HTTP calls show a request made around
+  the tools. Production alerts watch rates over runs, which suits quality and is too slow for this.
+  - **A scope per case:** the tools an agent may call and the argument values they may take (this
+    customer's account, not any account), checked against the actual operation and parameters.
+    Anything else fails, including an HTTP call to a protected host made another way.
+  - **Fails closed:** `faults()` on the permission check (error, timeout) and a check that the
+    protected action didn't run anyway.
+  - **Probes:** cases that ask, or inject an instruction, for an out-of-scope action, so the
+    boundary is tested on every pull request rather than assumed.
+  - **Security flags on what agents access and run, in production:** people now approve almost
+    everything an agent asks, so a click can't be the safeguard. Assay already sees each tool
+    call, its arguments and the HTTP requests a run makes. It should flag the security-relevant
+    ones by itself, with no rules to write first, approved or not:
+    - **Secrets and credentials:** reading `.env`, keys, tokens, `~/.ssh`, cloud credentials, or a
+      secret appearing in a tool's arguments, result or the answer.
+    - **Destructive or irreversible actions:** deletes, drops, `rm -rf`, force pushes, payments,
+      refunds, emails to many people.
+    - **Privilege and reach:** `sudo`, permission changes, new users or keys, access to another
+      customer's records, a host outside the usual list, a download piped into a shell.
+    - **Data leaving:** personal data sent to a tool or host that doesn't need it.
+    Each flag names the run, the step, what it touched and why it matters, with its severity.
+    High severity alerts at once to Slack or a webhook (not after a rate moves, as quality alerts
+    do), grouped so one bad deploy is one alert. Flags a team marks as expected become the
+    allowed list; the rest become tests, so the same action is caught in CI before the next
+    deploy. The same flags apply to the coding agents that build the app, through their hooks.
+  - **Approvals that are rubber stamps:** people approve almost everything an agent asks, so an
+    approval step can look safe while checking nothing. `run.approval()` records the action, the
+    decision and who, but not what the person was shown or how long they took. It should record
+    both (the arguments on screen, asked and decided times) and report, per approver and per
+    action: the approval rate, the median seconds to decide, risky actions approved in seconds,
+    an approval that doesn't match what then ran (approved a $40 refund, $400 went out), and
+    approved runs that broke a security rule anyway. In tests, a case where the person says no
+    checks the agent stops. The number for a team: the share of approvals that were real reviews.
+- **Saying "the sources don't say":** a RAG answer to a question its documents don't answer
+  should say so, not fill the gap with something plausible. Faithfulness flags a fabricated
+  claim, but nothing marks a case as unanswerable and fails an answer that answers it anyway. A
+  case should be able to expect an abstention, and the report should count abstentions apart:
+  right to abstain, abstained when the answer was there, answered when it wasn't.
+- **Citations the answer gives, checked:** faithfulness checks the judge's evidence against the
+  fragments, not the answer's own citations. A citation (a document, a page, a section) should
+  be checked against the source it names: that source exists, was retrieved, and says what the
+  sentence citing it says. A right claim with the wrong page fails as a wrong citation, not as
+  a wrong answer.
 - **Paid tool calls (x402):** an agent that pays for an API gets a `402` challenge, pays, and
   retries. A check should read the challenge (price, network, the payment flow it declares) and
   compare it with what the test expects, then check the paid response against its schema and
