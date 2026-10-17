@@ -89,6 +89,38 @@ when the judge is what varies. A judge that agreed with itself every time leaves
 flaky, or needing reruns, as before. `assay calibrate` measures a judge's consistency on a
 labeled set ahead of time; `rejudge` measures it on this run's answers.
 
+## More attempts only where they're needed
+
+"Inconclusive: rerun with more attempts" leaves the rerun to you, and a rerun repeats every case,
+including the ones that were already clear. `assay test --rerun-unsure` (or `rerun_unsure = true`
+under `[test]`) does it in the same run, for the cases that need it:
+
+```
+assay test --repeat 6 --rerun-unsure
+1 case could be worse, too few attempts to tell: 6 more attempts of it (12 each).
+5 cases · 6 attempts each, up to 12 for the 1 case that needed more · compared with ...
+```
+
+After the first attempts, only the cases that could be worse run again, a batch (`repeat`
+attempts) at a time. Each one stops at the first batch where it's clear: chance, or worse. Clear
+cases never run again, so the spend goes to the ambiguous ones.
+
+- **Peeking is paid for.** Every look at the same check is another chance of a false alarm, so
+  the bar for "got worse" is split across the looks (5% after one, 2.5% after two, ...), on top
+  of the correction for the number of checks.
+- **It never passes a case because it ran out.** A check that could be worse stops asking for
+  reruns at 20 attempts. The loop stops at 19, so a case that's still unclear stays
+  inconclusive, exit 3.
+- **The baseline limits it.** More attempts now can't make up for few attempts before: against
+  a 6-attempt baseline, 50% can't be told from chance. Give the baseline more attempts
+  (`assay test --repeat 16` once) when cases often end inconclusive.
+- **Judge-unstable checks aren't rerun.** More attempts of the AI won't settle a judge that
+  changes its verdict on the same answer.
+
+With pytest, the cases to run come through `ASSAY_RERUN_CASES` and the plugin picks them. Another
+command gets the same variable, a JSON list of case names; one that ignores it runs every case
+again, which costs more but stays correct.
+
 ## Two cases that aren't left to chance
 
 - **A drop that follows the model.** If a check fails on exactly the model a call was routed

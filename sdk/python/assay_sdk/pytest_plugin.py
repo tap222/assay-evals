@@ -92,7 +92,10 @@ def pytest_addoption(parser):
 
 
 def _rerun_list(config) -> Optional[set]:
-    """The tests to rerun, from the last run's .assay/state.json; None when not rerunning."""
+    """The tests to rerun, from the last run's .assay/state.json, or the cases `assay test --rerun-unsure`
+    names in ASSAY_RERUN_CASES; None when not rerunning."""
+    if os.environ.get("ASSAY_RERUN_CASES"):
+        return set(json.loads(os.environ["ASSAY_RERUN_CASES"]))
     if (config.getoption("assay_rerun", None) or os.environ.get("ASSAY_RERUN")) != "failed":
         return None
     path = config.rootpath / ".assay" / "state.json"
@@ -115,6 +118,8 @@ def pytest_collection_modifyitems(config, items):
 
 
 def pytest_report_header(config):
+    if os.environ.get("ASSAY_RERUN_CASES"):
+        return f"assay: more attempts of the {len(_rerun_list(config))} test(s) that need them"
     wanted = _rerun_list(config) if config.getoption("assay_rerun", None) or os.environ.get("ASSAY_RERUN") else None
     if wanted is not None:
         return f"assay: rerunning the {len(wanted)} test(s) that didn't pass last time" if wanted else \

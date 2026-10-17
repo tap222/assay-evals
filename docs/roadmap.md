@@ -194,23 +194,15 @@ User stories: [US-16](user-stories.md#us-16), [US-17](user-stories.md#us-17).
   there's no command that runs a frozen judge (model and prompt) on a past run's saved outputs,
   with no calls to the AI. That would measure the judge's own variance apart from a model swap,
   and test a new judge or rubric on the same answers before switching to it.
-- **Reruns only where they're needed:** an inconclusive case (8/8 → 4/8) says "rerun with more
-  attempts", but not how many, and a rerun repeats every case. A sequential test (such as SPRT)
-  would add attempts one batch at a time to the borderline cases only, and stop each one as
-  soon as it's clearly chance or clearly worse, with a cap on attempts. Clear cases stop at the
-  first batch, so the spend goes to the ambiguous ones. It has to keep the correction for the
-  number of checks, so repeated looks don't raise false alarms. Judge-unstable checks are left
-  out: more attempts of the AI won't settle a judge that changes its verdict on the same answer.
 - **Paid tool calls (x402):** an agent that pays for an API gets a `402` challenge, pays, and
   retries. A check should read the challenge (price, network, the payment flow it declares) and
   compare it with what the test expects, then check the paid response against its schema and
   the settlement receipt. It uses a mocked facilitator or test payments, never real money by
   default. Price, status, schema and settlement then show in the case-level diff like any other
-  change.
-- **Charged twice for one operation:** `assay.faults()` already injects timeouts and errors into
-  tool calls. For a paid tool it should also fail after settlement and repeat requests, then
-  count payments per logical operation: an agent or API that pays again on a retry fails the
-  check. This is a new payment check, not a new payment library.
+  change, and `at_most_once` already catches a payment repeated after a lost reply.
+- **The same request sent twice:** `faults(tool="lost")` and `expect(run).at_most_once()` catch an
+  agent that pays again after a lost reply. A client that sends the whole request again (a
+  double click, a webhook delivered twice) isn't simulated yet.
 - **Paired pass and fail counts for every run:** the run-level change is a paired interval on
   pass rates. It should also count the cases that went from pass to fail and from fail to pass,
   with an exact McNemar test on those two numbers, as document runs already do per slice. A

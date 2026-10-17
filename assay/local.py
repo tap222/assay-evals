@@ -174,6 +174,7 @@ CONFIG_TEMPLATE = '''\
 [test]
 command = "pytest -q tests/ai"   # what `assay test` runs
 repeat = 1        # attempts per case; 3 or more lets Assay tell a flaky case from a broken one
+rerun_unsure = false  # more attempts only for the cases that could be worse, until each is clear
 tolerance = 0.01  # a drop in the pass rate smaller than this doesn't fail the run
 timeout = 900     # seconds per attempt; a command still running then is stopped (0: no limit)
 
@@ -348,6 +349,7 @@ def load_config(root: Path, path: Optional[Path] = None, policy: bool = True) ->
         if not isinstance(allowed, list) or set(allowed) - kinds:
             raise SetupError(f"{CONFIG}, [pii] allow.{tool}: a list of kinds from {', '.join(learn.PII)}.")
     out = {"command": test.get("command"), "repeat": int(test.get("repeat", 1)),
+           "rerun_unsure": bool(test.get("rerun_unsure", False)),
             "timeout": float(test["timeout"]) if test.get("timeout") else None,
             "tolerance": float(test.get("tolerance", 0.01)), "contracts": rules,
             "pii": {"check": bool(pii.get("check", True)), "allow": {k: set(v) for k, v in allow.items()},
@@ -654,7 +656,7 @@ def _behavior_config(b: dict) -> dict:
             "limits": {k: float(b[k]) for k in behavior.LIMITS if k in b}}
 
 
-DEFAULT_CONFIG = {"command": None, "repeat": 1, "timeout": None, "tolerance": 0.01, "contracts": [],  # no assay.toml
+DEFAULT_CONFIG = {"command": None, "repeat": 1, "rerun_unsure": False, "timeout": None, "tolerance": 0.01, "contracts": [],  # no assay.toml
                   "pii": {"check": True, "allow": {}, "answers": True, "answer_allow": set()}, "pytest": {"checks": True, "record": "cases"},
                   "prices": None, "acks": [], "calibrate": None, "documents": {"auto_approve": None, "target": 0.99}, "behavior": {"fail": True, "ratios": {}, "suite": behavior.SUITE_RATIO, "limits": {}},
                   "judge": {"enabled": False, "model": "claude-opus-5", "redact": True, "provider": "anthropic"}}
@@ -850,9 +852,11 @@ TIMED_OUT = 124  # the exit code `timeout` uses
 
 
 def run_command(command: str, events: Path, run_id: str, repeat: int, timeout: Optional[float] = None,
-                rerun_failed: bool = False, prices: Optional[dict] = None) -> List[int]:
+                rerun_failed: bool = False, prices: Optional[dict] = None, first: int = 0,
+                cases: Optional[List[str]] = None) -> List[int]:
     """Run the command once per attempt, with the SDK recording to `events`. Returns the exit codes;
-    TIMED_OUT for an attempt stopped at `timeout` seconds (with everything it started)."""
+    TIMED_OUT for an attempt stopped at `timeout` seconds (with everything it started). `first`: the
+    first attempt's number; `cases`: only these cases (ASSAY_RERUN_CASES, read by the pytest plugin)."""
     import signal
     env = {k: v for k, v in os.environ.items() if k != "ASSAY_URL"}  # record locally, never to a server
     env.update(ASSAY_PATH=str(events), ASSAY_TEST_RUN=run_id)
@@ -860,9 +864,11 @@ def run_command(command: str, events: Path, run_id: str, repeat: int, timeout: O
         env["ASSAY_PRICES"] = json.dumps(prices)
     if rerun_failed:
         env["ASSAY_RERUN"] = "failed"  # the pytest plugin runs only what didn't pass last time
+    if cases is not None:
+        env["ASSAY_RERUN_CASES"] = json.dumps(sorted(cases))
     codes = []
     posix = os.name == "posix"
-    for attempt in range(repeat):
+    for attempt in range(first, first + repeat):
         env["ASSAY_TEST_ATTEMPT"] = str(attempt)
         # Its own process group (Unix) or console group (Windows): a timeout stops it and all it started.
         group = {"start_new_session": True} if posix else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
@@ -886,6 +892,42 @@ def run_command(command: str, events: Path, run_id: str, repeat: int, timeout: O
                     proc.kill()
             codes.append(TIMED_OUT)
     return codes
+
+
+def rerun_unsure(root: Path, cfg: dict, run_id: str, command: str, repeat: int, codes: List[int],
+                 baseline: Optional[str], timeout: Optional[float], prices: Optional[dict]) -> Tuple[List[int], int]:
+    """`assay test --rerun-unsure`: after the first attempts, only the cases that need reruns (could be
+    worse, too few attempts to tell) run again, a batch at a time. A case that's clearly chance or
+    clearly worse stops at the first batch it's clear in. It stops one attempt short of
+    flaky.MAX_ATTEMPTS, where a check that could be worse stops asking for reruns and counts as
+    flaky: a case still unclear then stays inconclusive, never passes because the loop ran out.
+    Returns every exit code and how many looks were taken, which `finish` splits the bar for "got
+    worse" across."""
+    home = ensure_home(root)
+    events = home / "runs" / f"{run_id}.jsonl"
+    engine = store.make_engine(f"sqlite:///{home / 'assay.db'}")
+    state = _migrate(engine, home, _state(home))
+    base = None if baseline == "none" else baseline or (BASELINE if state.get("baseline_cases") else None)
+    sync_contracts(engine, cfg["contracts"])
+    batch, done, looks, cap = max(2, repeat), repeat, 1, flaky.MAX_ATTEMPTS - 1
+    while done < cap:
+        _, bad = load_file(engine, str(events), TENANT)
+        if bad:
+            break
+        with flaky.looks(looks):
+            result = evaluate(engine, run_id, base, cfg["tolerance"], cfg["pii"], cfg["behavior"], None, cfg.get("acks"))
+        if result is None or not base:
+            break
+        c = classify(result, True)
+        unsure = {p["case_id"] for p in c["unsure"]} - {p["case_id"] for p in c["problems"]}
+        if not unsure:
+            break
+        n = min(batch, cap - done)
+        print(f"\n{_n(len(unsure), 'case')} could be worse, too few attempts to tell: {n} more attempts of "
+              f"{'it' if len(unsure) == 1 else 'them'} ({done + n} each).", file=sys.stderr)
+        codes = codes + run_command(command, events, run_id, n, timeout, prices=prices, first=done, cases=sorted(unsure))
+        done, looks = done + n, looks + 1
+    return codes, looks
 
 
 def sync_contracts(engine, rules: List[dict]) -> None:
@@ -2354,7 +2396,11 @@ def report(run_id: str, baseline: Optional[str], result: dict, repeat: int, code
     out = [_paint("Assay test", "bold") + f"  {run_id}", "─" * 44]
     against = (against or f"compared with the baseline, {baseline}") if baseline else \
         "no baseline yet: every failing check counts"
-    out += [f"{_n(cases, 'case')} · {_n(repeat, 'attempt')} each · {against}", ""]
+    more = {case for (case, _), a in result["attempts"].items() if len(a) > repeat}  # --rerun-unsure
+    most = max((len(a) for a in result["attempts"].values()), default=repeat)
+    each = f"{_n(repeat, 'attempt')} each" + (f", up to {most} for the {_n(len(more), 'case')} that needed more"
+                                              if more else "")
+    out += [f"{_n(cases, 'case')} · {each} · {against}", ""]
     result["summary"] = summarize(result, c, baseline)
     out += summary_block(result["summary"])
     everywhere = (result.get("setup") or {}).get("everywhere") or []
@@ -2530,7 +2576,7 @@ def new_run_id() -> str:
 
 def test(root: Path, command: Optional[str], repeat: Optional[int], baseline: Optional[str],
          send: Optional[dict] = None, junit: Optional[str] = None, timeout: Optional[float] = None,
-         failed: bool = False, judge: bool = False) -> int:
+         failed: bool = False, judge: bool = False, unsure: bool = False) -> int:
     """`assay test`. Prints the report; returns the exit code."""
     try:  # no assay.toml: the defaults, still held to a pull request's trusted policy
         cfg = load_config(root) if (root / CONFIG).exists() else with_trusted_policy(
@@ -2586,7 +2632,11 @@ def test(root: Path, command: Optional[str], repeat: Optional[int], baseline: Op
         print(f"\n`{command}` recorded nothing. Does it record its cases: with the assay_case fixture or "
               "assay.run(..., test=\"<case>\") in Python, assayCase() in JavaScript?", file=sys.stderr)
         return guard_only(root, home)
-    return _finish_test(root, cfg, run_id, repeat, codes, baseline, junit, timeout, failed, command, send)
+    looks = 1
+    if unsure or cfg.get("rerun_unsure"):
+        codes, looks = rerun_unsure(root, cfg, run_id, command, repeat, codes, baseline, timeout, cfg.get("prices"))
+    with flaky.looks(looks):
+        return _finish_test(root, cfg, run_id, repeat, codes, baseline, junit, timeout, failed, command, send)
 
 
 def guard_only(root: Path, home: Path) -> int:

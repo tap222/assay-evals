@@ -116,7 +116,9 @@ SDK), and adds `--repeat N` for flaky cases and `--junit report.xml` for CI. Its
   each check is judged by its pass rate against its baseline's, corrected for how many checks
   there are. 8/8 → 7/8 is what an unchanged agent does: flaky, not blocking. A drop that could be
   real but can't be told yet (8/8 → 4/8 on one of five tasks) is inconclusive, exit 3, with the
-  number of attempts that would settle it. A drop beyond chance, or a check that passed every
+  number of attempts that would settle it; `assay test --rerun-unsure` runs those attempts for
+  the cases that need them, in the same run ([more attempts only where they're
+  needed](repeats.md#more-attempts-only-where-theyre-needed)). A drop beyond chance, or a check that passed every
   attempt before and fails every one now (three or more each), is a regression, exit 1. A drop
   that follows the model a call was routed to is a regression too, however few the attempts.
   With one attempt there's nothing to tell chance by: a pass that became a failure is a

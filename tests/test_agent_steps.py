@@ -107,6 +107,49 @@ def test_faults_and_handling_them(sent):
 
 
 
+
+# ---------- a payment that went through, with its reply lost ----------
+
+charges = []
+
+
+@assay.tool
+def charge(order_id, amount):
+    charges.append(order_id)
+    return {"charged": amount}
+
+
+def checkout(retry: bool, check_first: bool = False):
+    """Charges O-17; when that fails, a careless one charges again, a careful one asks first."""
+    for _ in range(2 if retry else 1):
+        try:
+            if check_first and charges:
+                return "Paid already."
+            return f"Paid {charge('O-17', 40)['charged']}."
+        except Exception:
+            continue
+    return "Payment failed."
+
+
+def test_a_retry_after_a_lost_reply_charges_twice(sent):
+    charges.clear()
+    with assay.run("checkout") as r:
+        with assay.faults(charge="lost"):
+            checkout(retry=True)
+    assert charges == ["O-17", "O-17"]  # "lost" calls the tool for real, then times out
+    assert [s.get("fault") for s in r.steps if s["kind"] == "tool"] == ["lost", "lost"]
+    assert expect(r).at_most_once("charge", key="order_id").failures() == [
+        "at_most_once(charge, key=order_id): charge went through 2 times for order_id='O-17' (steps 0, 1); once expected."]
+    charges.clear()
+    with assay.run("checkout") as r2:
+        with assay.faults(charge="lost"):
+            checkout(retry=True, check_first=True)
+    assert charges == ["O-17"] and expect(r2).at_most_once("charge").failures() == []
+    with assay.run("checkout") as r3:  # a call that failed before it ran doesn't count
+        with assay.faults(charge="error:1"):
+            checkout(retry=True)
+    assert expect(r3).at_most_once("charge", key="order_id").failures() == []
+
 # ---------- the world changing while the agent works ----------
 
 @assay.tool

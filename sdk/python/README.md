@@ -149,7 +149,9 @@ and `assay calibrate` fails a judge that read dev or test (see
 
 `with assay.faults(get_order="error"):` breaks a tool on purpose, and
 `assay.faults(get_supplier={"returns": [assay.REAL, {"status": "on_hold"}]})` changes what it
-returns between calls (a state that moves while the agent works);
+returns between calls (a state that moves while the agent works). `faults(charge="lost")` lets
+the call go through and loses its reply, and `expect(run).at_most_once("charge", key="order_id")`
+fails a retry that charged twice;
 `expect(run).handles_failure()`, `.no_false_success()`, `.well_formed_arguments()` and
 `.checkpoint(name, ...)` check what the agent did about it (see [agents](../../docs/agents.md)).
 

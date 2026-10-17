@@ -105,6 +105,8 @@ def main(argv=None) -> int:
     t.add_argument("--timeout", type=float, metavar="SECONDS", help="Stop an attempt that runs longer (overrides "
                                                                      "assay.toml)")
     t.add_argument("--failed", action="store_true", help="Run only the cases that didn't pass last time (pytest)")
+    t.add_argument("--rerun-unsure", action="store_true", help="Give more attempts only to the cases that could be "
+                                                                 "worse, a batch at a time, until each is clear")
     t.add_argument("--judge", action="store_true", help="Also have an LLM judge plan quality and consistency "
                                                         "(needs `pip install anthropic`; a model call per run)")
     t.add_argument("--base", metavar="REF", help="Also check the tests against this branch: assertions the change "
@@ -385,7 +387,7 @@ def main(argv=None) -> int:
             send = ({"url": args.url, "key": args.key, "tenant": args.send_tenant}
                     if local.upload_wanted(args.upload) else None)
             return local.test(root, local.split_command(args.command), args.repeat, args.baseline, send,
-                              args.junit, args.timeout, args.failed, args.judge)
+                              args.junit, args.timeout, args.failed, args.judge, args.rerun_unsure)
         if args.global_:
             if not args.claude_code:
                 print("--global goes with --claude-code: `assay init --claude-code --global`.", file=sys.stderr)

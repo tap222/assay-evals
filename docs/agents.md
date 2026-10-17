@@ -261,9 +261,26 @@ expect(assay_case).handles_failure(max_retries=2)
 
 For a tool recorded with `@assay.tool` or `run.call`: `empty` returns `[]`, `error` raises, `timeout`
 raises `TimeoutError`, `error:N` fails the first N calls and then calls it for real (does it retry?),
-`{"return": value}` returns that. The step records which fault it was. `handles_failure()` passes when
+`{"return": value}` returns that, and `lost` calls it for real, then raises `TimeoutError` (it
+went through, but the reply never arrived). The step records which fault it was. `handles_failure()` passes when
 the answer doesn't claim success, no tool is retried more than `max_retries` times, and the user is
 told (or the run escalated, or a retry worked).
+
+**Charged twice for one operation.** A payment that went through, with its reply lost, is the
+retry that charges twice. `lost` makes it happen; `at_most_once` checks the agent didn't do it
+again:
+
+```python
+with assay.faults(charge="lost"):
+    reply = my_agent("Pay for order 17", run=assay_case)
+expect(assay_case).at_most_once("charge", key="order_id")
+```
+
+It fails when `charge` went through more than once for the same `order_id` (more than once in
+all, without `key`): "charge went through 2 times for order_id='O-17' (steps 3, 5); once
+expected." A call counts when it ran: it succeeded, or `lost` dropped its reply. One that failed
+before it ran (`error`, `timeout`) doesn't. The same check fits a booking, an email or anything
+else that mustn't happen twice.
 
 **The world changing while the agent works.** An approval checked when the agent plans can be stale
 by the time it acts. `{"returns": [a, b, ...]}` gives a tool one value per call, the last one from

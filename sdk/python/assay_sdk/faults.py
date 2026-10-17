@@ -9,6 +9,8 @@ For each named tool (recorded with @assay.tool or run.call), the fault replaces 
   "error"      raises ToolFault, recorded as the tool's error
   "timeout"    raises TimeoutError
   "error:N"    fails the first N calls, then calls the tool for real: does the agent retry?
+  "lost"       calls the tool for real, then raises TimeoutError: the payment went through, but the
+               reply never arrived. Does the agent pay again? (expect(...).at_most_once("pay"))
   {"return": value}   returns value instead, e.g. {"return": {"status": "unknown"}}
   {"returns": [a, b]}  one value per call, the last one from then on: the world changing while the
                        agent works. REAL in the list calls the tool for real
@@ -49,10 +51,10 @@ _active: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar("assa
 @contextmanager
 def faults(**spec):
     for name, v in spec.items():
-        ok = isinstance(v, str) and (v in ("empty", "error", "timeout") or (v.startswith("error:") and v[6:].isdigit())) \
+        ok = isinstance(v, str) and (v in ("empty", "error", "timeout", "lost") or (v.startswith("error:") and v[6:].isdigit())) \
             or (isinstance(v, dict) and ("return" in v or (isinstance(v.get("returns"), list) and v["returns"])))
         if not ok:
-            raise ValueError(f"faults({name}=...): empty, error, timeout, error:N, {{'return': value}}, "
+            raise ValueError(f"faults({name}=...): empty, error, timeout, lost, error:N, {{'return': value}}, "
                              "or {'returns': [value, ...]}")
     state = {"spec": dict(spec), "calls": {}}
     token = _active.set(state)
@@ -76,6 +78,9 @@ def call(name: str, fn: Callable, args: tuple, kwargs: dict) -> Tuple[Any, Optio
         return spec["return"], "return"
     if spec == "empty":
         return [], "empty"
+    if spec == "lost":
+        fn(*args, **kwargs)
+        raise _tag(TimeoutError(f"{name} timed out after it ran (injected by assay.faults)"), "lost")
     if spec == "timeout":
         raise _tag(TimeoutError(f"{name} timed out (injected by assay.faults)"), "timeout")
     if spec == "error" or (spec.startswith("error:") and n <= int(spec[6:])):

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 __all__ = ["tool_calls", "assert_called", "assert_not_called", "assert_called_before", "assert_max_steps",
            "assert_answer_contains", "assert_no_pii", "expect", "Expectations", "rewordings"]
@@ -290,6 +290,24 @@ class Expectations:
                         f"{(self.run.answer_text or '(no answer)')[:160]!r}.")
             return None
         return self._add(f"handles_failure({max_retries})", rule)
+
+    def at_most_once(self, tool: str, key: Optional[str] = None) -> "Expectations":
+        """`tool` went through at most once per value of its `key` argument (once in all without one):
+        a payment, booking or email isn't repeated when a retry follows a lost reply. A call counts
+        when it ran: it succeeded, or assay.faults(tool="lost") dropped its reply after it ran."""
+        def rule():
+            seen: Dict[str, List[int]] = {}
+            for c in tool_calls(self.run):
+                if c["name"] == tool and (not c.get("error") or c.get("fault") == "lost"):
+                    k = "" if key is None else repr((c.get("args") or {}).get(key))
+                    seen.setdefault(k, []).append(c["seq"])
+            twice = {k: s for k, s in seen.items() if len(s) > 1}
+            if not twice:
+                return None
+            k, steps = next(iter(twice.items()))
+            what = f" for {key}={k}" if key is not None else ""
+            return f"{tool} went through {len(steps)} times{what} (steps {', '.join(map(str, steps))}); once expected."
+        return self._add(f"at_most_once({tool}" + (f", key={key}" if key else "") + ")", rule)
 
     def checkpoint(self, name: str, rule: Optional[Callable[[Any], bool]] = None, *, tool: Optional[str] = None,
                    args: Optional[dict] = None, result: str = "ok", answer: Optional[str] = None) -> "Expectations":

@@ -150,6 +150,73 @@ def test_repeated_attempts_tell_chance_from_a_regression(project, capsys, monkey
     assert main(["test"]) == 1 and "task_0" in capsys.readouterr().out
 
 
+
+UNSURE = '''
+import json, os
+import assay_sdk as assay
+assay.init()
+attempt, mode = int(os.environ["ASSAY_TEST_ATTEMPT"]), os.environ.get("MODE", "same")
+only = set(json.loads(os.environ.get("ASSAY_RERUN_CASES", "null")) or [])
+for i in range(5):
+    if only and f"task_{i}" not in only:
+        continue
+    # task_0 after the change: fails every other attempt of the first 6, then keeps failing every other one
+    # ("worse") or stops failing ("chance")
+    ok = not (mode != "same" and i == 0 and attempt % 2 and (attempt < 6 or mode == "worse"))
+    assay.check(None, f"task_{i}", "pass" if ok else "fail", field="solved", expected="yes", actual="yes" if ok else "no")
+'''
+
+
+def _attempts(project, case):
+    rows = [json.loads(l) for l in sorted((project / ".assay" / "runs").glob("*.jsonl"))[-1].read_text().splitlines()]
+    return sum(1 for r in rows if (r.get("test") or {}).get("case") == case)
+
+
+def test_rerun_unsure_gives_more_attempts_only_to_the_cases_that_need_them(project, capsys, monkeypatch):
+    (project / "agent.py").write_text(UNSURE, encoding="utf-8")
+    config(project, f"{sys.executable} agent.py", repeat=6)
+    assert main(["test", "--repeat", "16"]) == 0  # the baseline: 16/16 each
+    monkeypatch.setenv("MODE", "worse")
+    assert main(["test"]) == 3  # 16/16 → 3/6 on its own: inconclusive
+    capsys.readouterr()
+
+    assert main(["test", "--rerun-unsure"]) == 1  # 3/6, then 6/12: worse, settled without a human rerun
+    out = capsys.readouterr()
+    assert "1 case could be worse, too few attempts to tell: 6 more attempts of it (12 each)." in out.err
+    assert "5 cases · 6 attempts each, up to 12 for the 1 case that needed more" in out.out and "Failed." in out.out
+    assert (_attempts(project, "task_0"), _attempts(project, "task_1")) == (12, 6)  # only the unsure case ran again
+
+    monkeypatch.setenv("MODE", "chance")
+    assert main(["test", "--rerun-unsure"]) == 0  # 3/6, then 9/12: no worse than chance
+    assert "6 more attempts of it" in capsys.readouterr().err
+
+
+def test_rerun_unsure_never_passes_a_case_because_it_ran_out(project, capsys, monkeypatch):
+    (project / "agent.py").write_text(UNSURE, encoding="utf-8")
+    config(project, f"{sys.executable} agent.py", repeat=4)
+    assert main(["test", "--repeat", "12"]) == 0  # 12 attempts of baseline can't tell 50% from chance here
+    monkeypatch.setenv("MODE", "worse")
+    assert main(["test", "--rerun-unsure"]) == 3  # still unclear at 19 attempts: inconclusive, not flaky
+    assert _attempts(project, "task_0") == 19 and _attempts(project, "task_1") == 4
+
+
+def test_more_looks_raise_the_bar_for_got_worse():
+    from types import SimpleNamespace as N
+    from assay import flaky
+    def rows(p, n):
+        return [N(status="pass" if i < p else "fail", attempt=i, ts=i, actual="x", case_id="c", field="f",
+                  evaluator="", judgements=None, judgements_passed=None) for i in range(n)]
+    cand, base = {("c", "f", ""): rows(12, 20)}, {("c", "f", ""): rows(20, 20)}
+    assert flaky.assess(cand, base)[("c", "f", "")]["state"] == "got_worse"  # 20/20 → 12/20, one look
+    with flaky.looks(4):  # q ≈ 0.002 still clears 0.05/4; the bar moved, the clear case stays clear
+        assert flaky.assess(cand, base)[("c", "f", "")]["state"] == "got_worse"
+    cand = {("c", "f", ""): rows(15, 20)}
+    q = flaky.assess(cand, base)[("c", "f", "")]["q_worse"]
+    assert 0.05 / 3 < q <= 0.05  # 20/20 → 15/20: worse on one look, not after three
+    assert flaky.assess(cand, base)[("c", "f", "")]["state"] == "got_worse"
+    with flaky.looks(3):
+        assert flaky.assess(cand, base)[("c", "f", "")]["state"] != "got_worse"
+
 JUDGED = '''
 import os
 import assay_sdk as assay
