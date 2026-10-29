@@ -42,6 +42,32 @@ def tool_schemas(tools: Optional[List[Any]]) -> Dict[str, dict]:
     return out
 
 
+def tool_collisions(tools: Optional[List[Any]]) -> Dict[str, List[str]]:
+    """Detect tool names offered by more than one MCP server in the same model call:
+    returns {tool_name: [server1, server2, ...]} for each colliding tool."""
+    if not tools:
+        return {}
+    by_tool: Dict[str, List[str]] = {}
+    for t in tools:
+        name, server = None, None
+        if isinstance(t, str):
+            if "." in t:
+                server, name = t.split(".", 1)
+            else:
+                name = t
+        elif isinstance(t, dict):
+            fn = t.get("function") if isinstance(t.get("function"), dict) else t
+            name = fn.get("name")
+            server = t.get("server") or t.get("mcp_server") or fn.get("server") or fn.get("mcp_server")
+            if name and "." in str(name) and not server:
+                server, name = str(name).split(".", 1)
+        if name and server:
+            servers = by_tool.setdefault(str(name), [])
+            if str(server) not in servers:
+                servers.append(str(server))
+    return {name: sorted(servers) for name, servers in by_tool.items() if len(servers) > 1}
+
+
 def _type_ok(value: Any, kind: Any) -> bool:
     kinds = kind if isinstance(kind, list) else [kind]
     for k in kinds:

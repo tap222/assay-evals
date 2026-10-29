@@ -102,6 +102,7 @@ class Step(_E):
                                                                           "content_filter or error")
     tool_calls: Optional[List[Dict[str, Any]]] = Field(None, max_length=200, description="llm: the tool calls the "
                                                                                           "model asked for")
+    tool_collisions: Optional[List[Dict[str, Any]]] = Field(None, description="llm: colliding tool names offered by multiple MCP servers")
     tokens_cached: Optional[int] = Field(None, ge=0)
     tokens_reasoning: Optional[int] = Field(None, ge=0)
     context: Optional[Dict[str, int]] = Field(None, description='llm: what the input was made of, in tokens: '

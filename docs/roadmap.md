@@ -353,6 +353,11 @@ phase are marked there too.
   repeated side-effecting tool calls, charges, or writes), answered success to the sender (not an
   HTTP `409 Conflict`, which causes the sender to retry repeatedly and retries to pile up), and was
   recorded as a duplicate with its original run id.
+- **The same tool name on two MCP servers (server-scoped contracts and tool collisions):** with
+  multiple MCP servers behind an agent, two servers can both offer `search` and the client picks
+  one arbitrarily. `must_call("db.search")`, `must_not_call("web.search")`, and `at_most_once("payments.charge")`
+  allow contracts and assertions to name tools by server. `expect(run).no_tool_collisions()` detects
+  and flags when two MCP servers offer the same tool name in the same model call.
 
 ## Not planned
 
@@ -539,12 +544,6 @@ phase are marked there too.
     one.
   Each failed call is a case that can be run again, and the diff says what changed between
   versions: "stopped reading the time back", "now answers during hold".
-- **The same tool name on two MCP servers:** with many MCP servers behind one agent or gateway,
-  two of them can both offer `search`, and the client picks one without saying so. A wrong tool can
-  return a perfectly valid answer, so nothing else fails. Built: the flow and `assay diff` name a
-  tool by its server and name (`db.search`), so a call that moved to another server is a change of
-  its own. Not yet: contracts that name a tool by server, and a name offered by two servers in one
-  model call flagged as a collision.
 - **Handoffs between agents: advice or a transfer:** one agent asks another either for a second
   opinion or to take over the next task. These are different promises, and a run records only
   that a sub-agent ran (`parent_run_id`), not which was asked or what it was allowed to do. A

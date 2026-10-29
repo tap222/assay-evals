@@ -46,9 +46,13 @@ def tool_calls(run) -> List[dict]:
     return [s for s in run.steps if s["kind"] == "tool"]
 
 
+def _tool_fullname(c: dict) -> str:
+    return f"{c['server']}.{c['name']}" if c.get("server") else c["name"]
+
+
 def _call(c: dict) -> str:
     args = ", ".join(f"{k}={v!r}" for k, v in (c.get("args") or {}).items())
-    return f"{c['name']}({args}){' → error' if c.get('error') else ''}"
+    return f"{_tool_fullname(c)}({args}){' → error' if c.get('error') else ''}"
 
 
 def _calls_text(run) -> str:
@@ -61,35 +65,54 @@ def _matches(c: dict, args: dict) -> bool:
     return all(k in got and got[k] == v for k, v in args.items())
 
 
-def assert_called(run, tool: str, **args: Any) -> dict:
-    """`tool` was called, with at least these arguments. Returns the first matching call."""
+def _tool_matches(c: dict, tool: str, server: Optional[str] = None) -> bool:
+    """Matches tool call against name and server. Supports server.tool syntax."""
+    target_server = server
+    if "." in tool and target_server is None:
+        target_server, target_name = tool.split(".", 1)
+    else:
+        target_name = tool
+    fullname = f"{c['server']}.{c['name']}" if c.get("server") else c.get("name")
+    if fullname == tool:
+        return True
+    if c.get("name") != target_name:
+        return False
+    if target_server is not None:
+        return c.get("server") == target_server
+    return True
+
+
+def assert_called(run, tool: str, server: Optional[str] = None, **args: Any) -> dict:
+    """`tool` was called, with at least these arguments. Supports server.tool syntax or server=."""
     __tracebackhide__ = True  # pytest: show the test line, not this helper
     for c in tool_calls(run):
-        if c["name"] == tool and _matches(c, args):
+        if _tool_matches(c, tool, server) and _matches(c, args):
             return c
-    want = f"{tool}({', '.join(f'{k}={v!r}' for k, v in args.items())})"
-    same = [c for c in tool_calls(run) if c["name"] == tool]
+    target_name = f"{server}.{tool}" if server and "." not in tool else tool
+    want = f"{target_name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"
+    same = [c for c in tool_calls(run) if _tool_matches(c, tool, server)]
     raise AssertionError(f"Expected a call to {want}; "
-                         + (f"{tool} was called with {'; '.join(_call(c) for c in same)}" if same else
-                            f"{tool} was never called") + f". The run made: {_calls_text(run)}.")
+                         + (f"{target_name} was called with {'; '.join(_call(c) for c in same)}" if same else
+                            f"{target_name} was never called") + f". The run made: {_calls_text(run)}.")
 
 
-def assert_not_called(run, tool: str, **args: Any) -> None:
-    """`tool` wasn't called (with these arguments, if any are given)."""
+def assert_not_called(run, tool: str, server: Optional[str] = None, **args: Any) -> None:
+    """`tool` wasn't called (with these arguments, if any are given). Supports server.tool syntax."""
     __tracebackhide__ = True  # pytest: show the test line, not this helper
-    hits = [c for c in tool_calls(run) if c["name"] == tool and _matches(c, args)]
+    hits = [c for c in tool_calls(run) if _tool_matches(c, tool, server) and _matches(c, args)]
     if hits:
-        raise AssertionError(f"{tool} shouldn't have been called, but was: {'; '.join(_call(c) for c in hits)} "
-                             f"(step {hits[0]['seq']}).")
+        target_name = f"{server}.{tool}" if server and "." not in tool else tool
+        raise AssertionError(f"{target_name} shouldn't have been called, but was: "
+                             f"{'; '.join(_call(c) for c in hits)} (step {hits[0]['seq']}).")
 
 
 def assert_called_before(run, first: str, then: str) -> None:
-    """Every call to `then` comes after a call to `first`, e.g. get_order before refund."""
+    """Every call to `then` comes after a call to `first`, e.g. get_order before refund. Supports server.tool syntax."""
     __tracebackhide__ = True  # pytest: show the test line, not this helper
     seen = False
     for c in tool_calls(run):
-        seen = seen or c["name"] == first
-        if c["name"] == then and not seen:
+        seen = seen or _tool_matches(c, first)
+        if _tool_matches(c, then) and not seen:
             raise AssertionError(f"{then} was called at step {c['seq']} before any {first}. "
                                  f"The run made: {_calls_text(run)}.")
 
@@ -199,11 +222,13 @@ class Expectations:
             return None
         return self._add(name, rule)
 
-    def must_call(self, tool: str, **args: Any) -> "Expectations":
-        return self._via(f"must_call({tool})", assert_called, tool, **args)
+    def must_call(self, tool: str, server: Optional[str] = None, **args: Any) -> "Expectations":
+        label = f"{server}.{tool}" if server and "." not in tool else tool
+        return self._via(f"must_call({label})", assert_called, tool, server=server, **args)
 
-    def must_not_call(self, tool: str, **args: Any) -> "Expectations":
-        return self._via(f"must_not_call({tool})", assert_not_called, tool, **args)
+    def must_not_call(self, tool: str, server: Optional[str] = None, **args: Any) -> "Expectations":
+        label = f"{server}.{tool}" if server and "." not in tool else tool
+        return self._via(f"must_not_call({label})", assert_not_called, tool, server=server, **args)
 
     def must_call_before(self, first: str, then: str) -> "Expectations":
         return self._via(f"must_call_before({first}, {then})", assert_called_before, first, then)
@@ -216,19 +241,21 @@ class Expectations:
             return self._via(f"must_answer({containing!r})", assert_answer_contains, containing)
         return self._add("must_answer()", lambda: None if self.run.answer_text is not None else "The run gave no answer.")
 
-    def must_get_approval_before(self, action: str) -> "Expectations":
+    def must_get_approval_before(self, action: str, server: Optional[str] = None) -> "Expectations":
         """Every call to `action` comes after an approval for it whose decision is "approved"
-        (run.approval(action, "approved")); a later rejection takes it back."""
+        (run.approval(action, "approved")); a later rejection takes it back. Supports server.action syntax."""
         def rule():
             decision = None
             for s in self.run.steps:
-                if s["kind"] == "approval" and s.get("name") == action:
+                if s["kind"] == "approval" and _tool_matches(s, action, server):
                     decision = s.get("decision")
-                elif s["kind"] == "tool" and s.get("name") == action and decision != "approved":
+                elif s["kind"] == "tool" and _tool_matches(s, action, server) and decision != "approved":
                     why = "without an approval" if decision is None else f"after it was {decision}"
-                    return f"{action} ran at step {s['seq']} {why}."
+                    target = f"{server}.{action}" if server and "." not in action else action
+                    return f"{target} ran at step {s['seq']} {why}."
             return None
-        return self._add(f"must_get_approval_before({action})", rule)
+        label = f"{server}.{action}" if server and "." not in action else action
+        return self._add(f"must_get_approval_before({label})", rule)
 
     def max_cost(self, usd: float) -> "Expectations":
         return self._add(f"max_cost({usd:g})", lambda: None if _cost(self.run) <= usd else
@@ -361,23 +388,43 @@ class Expectations:
         label = ", ".join(x for x in (name, f"source={source!r}" if source else None) if x)
         return self._add(f"must_retrieve({label})", rule)
 
-    def at_most_once(self, tool: str, key: Optional[str] = None) -> "Expectations":
+    def at_most_once(self, tool: str, key: Optional[str] = None, server: Optional[str] = None) -> "Expectations":
         """`tool` went through at most once per value of its `key` argument (once in all without one):
-        a payment, booking or email isn't repeated when a retry follows a lost reply. A call counts
-        when it ran: it succeeded, or assay.faults(tool="lost") dropped its reply after it ran."""
+        a payment, booking or email isn't repeated when a retry follows a lost reply. Supports server.tool syntax."""
         def rule():
             seen: Dict[str, List[int]] = {}
             for c in tool_calls(self.run):
-                if c["name"] == tool and (not c.get("error") or c.get("fault") == "lost"):
+                if _tool_matches(c, tool, server) and (not c.get("error") or c.get("fault") == "lost"):
                     k = "" if key is None else repr((c.get("args") or {}).get(key))
                     seen.setdefault(k, []).append(c["seq"])
             twice = {k: s for k, s in seen.items() if len(s) > 1}
             if not twice:
                 return None
             k, steps = next(iter(twice.items()))
+            target = f"{server}.{tool}" if server and "." not in tool else tool
             what = f" for {key}={k}" if key is not None else ""
-            return f"{tool} went through {len(steps)} times{what} (steps {', '.join(map(str, steps))}); once expected."
-        return self._add(f"at_most_once({tool}" + (f", key={key}" if key else "") + ")", rule)
+            return f"{target} went through {len(steps)} times{what} (steps {', '.join(map(str, steps))}); once expected."
+        label = f"{server}.{tool}" if server and "." not in tool else tool
+        return self._add(f"at_most_once({label}" + (f", key={key}" if key else "") + ")", rule)
+
+    def no_tool_collisions(self) -> "Expectations":
+        """No model call was offered a tool name by more than one MCP server in the same call:
+        two servers offering 'search' leaves the client or model to pick one arbitrarily without saying so."""
+        def rule():
+            from assay_sdk.checks import tool_collisions
+            bad = []
+            for s in self.run.steps:
+                if s.get("kind") == "llm":
+                    cols = s.get("tool_collisions")
+                    if cols is None:
+                        raw = s.get("raw_tools") or s.get("tools")
+                        found = tool_collisions(raw) if raw else {}
+                    else:
+                        found = {c["name"]: c["servers"] for c in cols}
+                    for name, servers in found.items():
+                        bad.append(f"'{name}' was offered by both {', '.join(repr(x) for x in servers)} (step {s.get('seq')})")
+            return (f"Tool collision across MCP servers: {'; '.join(bad)}. The model or client picks one arbitrarily without saying so.") if bad else None
+        return self._add("no_tool_collisions()", rule)
 
     def duplicate_safe(self, duplicate_run: Optional[Any] = None, *, key: Optional[str] = None) -> "Expectations":
         """The run handles duplicate requests safely: the second delivery changes nothing (no repeated

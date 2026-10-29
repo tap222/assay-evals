@@ -324,6 +324,26 @@ expect(first_run).duplicate_safe(duplicate_run, key="order_id")
 
 For async handlers, `await assay.aduplicate(handle_payment_webhook, payload, run=assay_case)` works the same way.
 
+**The same tool name on two MCP servers.** When an agent connects to multiple MCP servers, two servers
+can both offer a tool named `search`. An agent calling `search` leaves the client or model to pick one
+arbitrarily without saying so.
+
+Contracts and assertions can name tools by server:
+
+```python
+expect(run).must_call("db.search", query="customers")
+expect(run).must_not_call("web.search")
+expect(run).at_most_once("payments.charge", key="order_id")
+expect(run).must_get_approval_before("db.drop_table")
+```
+
+And `expect(run).no_tool_collisions()` verifies that no model call in the run was offered the same
+tool name by multiple MCP servers:
+
+```python
+expect(run).no_tool_collisions()
+```
+
 **The world changing while the agent works.** An approval checked when the agent plans can be stale
 by the time it acts. `{"returns": [a, b, ...]}` gives a tool one value per call, the last one from
 then on, and `assay.REAL` in the list calls the tool for real. The invoice stays approved, and the

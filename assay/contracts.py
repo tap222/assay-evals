@@ -167,11 +167,17 @@ class Step(str):
     """A step name that also carries the step's arguments (a tool call's), so contracts
     can say "delete_order only where confirmed is true". Compares and hashes as its name."""
     args: dict
+    server: Optional[str]
 
-    def __new__(cls, name: str, args: Optional[dict] = None):
+    def __new__(cls, name: str, args: Optional[dict] = None, server: Optional[str] = None):
         obj = super().__new__(cls, name)
         obj.args = args or {}
+        obj.server = server
         return obj
+
+    @property
+    def fullname(self) -> str:
+        return f"{self.server}.{self}" if self.server else str(self)
 
 
 def _args(item) -> dict:
@@ -194,7 +200,9 @@ def _where(cond: Optional[dict], args: dict) -> bool:
 
 
 def _hits(c: dict, path: List[str]) -> List[int]:
-    return [i for i, s in enumerate(path) if s == c.get("step") and _where(c.get("where"), _args(s))]
+    target = c.get("step")
+    return [i for i, s in enumerate(path)
+            if (s == target or getattr(s, "fullname", s) == target) and _where(c.get("where"), _args(s))]
 
 
 def _args_text(args: dict) -> str:

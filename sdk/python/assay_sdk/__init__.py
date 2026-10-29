@@ -359,21 +359,26 @@ class Run:
             p = price_of(env_prices(), model)
             if p:
                 cost_usd = round(((tokens_in or 0) * p[0] + (tokens_out or 0) * p[1]) / 1e6, 8)
-        from assay_sdk.checks import tool_schemas
+        from assay_sdk.checks import tool_collisions, tool_schemas
         schemas = {k: v for k, v in tool_schemas(tools).items() if self.tool_schemas.get(k) != v}
         self.tool_schemas.update(schemas)  # sent once per run and tool, not with every call
+        collisions = tool_collisions(tools)
+        collisions_list = [{"name": k, "servers": v} for k, v in collisions.items()] if collisions else None
         self._step("llm", started, name=name, finish_reason=finish_reason, tool_calls=self._c.clean(tool_calls),
-                   tool_schemas=schemas or None,
+                   tool_schemas=schemas or None, tool_collisions=collisions_list, raw_tools=self._c.clean(tools),
                    tokens_cached=tokens_cached, tokens_reasoning=tokens_reasoning, model=model, tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd,
                    prompt=prompt, text=self._c.clean(text), ended_at=_ts(ended),
                    status="error" if error else "ok", error=error, tools=_tool_names(tools),
                    context=context, media=media, settings=settings)
 
     def approval(self, action: str, decision: str = "approved", by: Optional[str] = None,
-                 reason: Optional[str] = None) -> None:
+                 reason: Optional[str] = None, server: Optional[str] = None) -> None:
         """A decision to allow an action, e.g. approval("refund", "approved", by="manager"). decision:
-        approved, rejected or pending. Contracts (requires_approval) and expect(run) check it."""
-        self._step("approval", name=action, decision=decision, by=by, text=self._c.clean(reason))
+        approved, rejected or pending. Supports server.action syntax or server=.
+        Contracts (requires_approval) and expect(run) check it."""
+        if "." in action and server is None:
+            server, action = action.split(".", 1)
+        self._step("approval", name=action, decision=decision, by=by, text=self._c.clean(reason), server=server)
 
     def outcome(self, value: str) -> None:
         """Whether the run did what was asked: resolved, unresolved, or escalated (handed to a person)."""
@@ -384,6 +389,8 @@ class Run:
              fault: Optional[str] = None) -> None:
         """A tool call you've already made. server: the MCP server it went to, if any. fault: the fault
         assay.faults() injected in its place (empty, error, timeout, return)."""
+        if "." in name and server is None:
+            server, name = name.split(".", 1)
         from assay_sdk.llm import normalize_args  # a JSON string, a list, a value: never rejected
         self._step("tool", started, name=name, args=self._c.clean(normalize_args(args)), result=self._c.clean(result),
                    ended_at=_ts(ended), status="error" if error else "ok", error=error, server=server, fault=fault)
@@ -441,18 +448,20 @@ class Run:
         self._step("mcp_prompt", name=name, args=self._c.clean(args or {}), result=self._c.clean(messages),
                    server=server, status="error" if error else "ok", error=error)
 
-    def call(self, name: str, fn: Callable, *positional, **args):
+    def call(self, name: str, fn: Callable, *positional, server: Optional[str] = None, **args):
         """Call fn(*positional, **args), record it as a tool call (result or error, and timing), and
         return its result. Exceptions are recorded, then re-raised."""
+        if "." in name and server is None:
+            server, name = name.split(".", 1)
         from assay_sdk.faults import call as fault_call, of as fault_of
         started = datetime.now(timezone.utc)
         try:
             out, fault = fault_call(name, fn, positional, args)
         except Exception as e:
             self.tool(name, args, error=f"{type(e).__name__}: {e}"[:2000], started=started,
-                      ended=datetime.now(timezone.utc), fault=fault_of(e))
+                      ended=datetime.now(timezone.utc), server=server, fault=fault_of(e))
             raise
-        self.tool(name, args, out, started=started, ended=datetime.now(timezone.utc), fault=fault)
+        self.tool(name, args, out, started=started, ended=datetime.now(timezone.utc), server=server, fault=fault)
         return out
 
     def state(self, obj: str, op: str = "update", value: Any = None) -> None:
