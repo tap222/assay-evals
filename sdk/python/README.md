@@ -362,6 +362,34 @@ expect(run).no_data_exfiltration()    # detects markdown image/link exfiltration
 expect(run).used_gateway("llm-gateway.internal.net")  # fails on direct calls bypassing the gateway
 ```
 
+### Cross-cutting agent reliability scenarios
+
+```python
+from assay_sdk import Scenario, HandoffContract, crash_at
+
+scenario = Scenario(
+    name="order_fulfillment",
+    handoffs=[
+        HandoffContract(from_agent="support", to_agent="billing", kind="advice"),       # advice: read-only
+        HandoffContract(from_agent="cart", to_agent="fulfillment", kind="transfer",    # transfer: single owner
+                        required_keys=["order_id", "address"]),
+    ],
+    expected_terminal_state="resolved",
+    read_back=lambda: fetch_order_from_db("O-1"),
+    compensations={"charge": "refund"},  # charge must be refunded if subsequent step fails
+)
+
+# Simulate crash right after remote call
+with crash_at(tool="charge", when="after"):
+    my_agent("Buy item", run=run)
+
+# Expectations for reliability
+expect(run).valid_handoffs(scenario.handoffs)
+expect(run).terminal_state("resolved", read_back=lambda: get_order_state("O-1"))
+expect(run).no_orphaned_effects(compensations={"charge": "refund"})
+expect(run).scenario_passed(scenario)
+```
+
 Each model call also records what its input was made of: the system prompt, tool definitions,
 history and user message in tokens, images and video (count, bytes, size), and settings
 (temperature, max tokens, reasoning effort). `assay.instrument()` reads them from the request;

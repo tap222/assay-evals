@@ -404,6 +404,15 @@ phase are marked there too.
     send messages, outside hosts), and flags capability widening in `assay changes`.
   - **Gateway governance:** `check_gateway_bypass(run, gateway_host)` and `expect(run).used_gateway(gateway_host)`
     fail tests whose code calls model providers or governed services directly instead of through the gateway.
+- **Cross-cutting agent reliability scenarios:** reusable end-to-end cases that run before a prompt,
+  model, tool-router or orchestration change, and on a schedule. Each handoff has an explicit contract,
+  permission scope and owner (`HandoffContract` for transfer vs advice); each run is checked for the right
+  terminal state with external read-back from the system of record (`read_back`), not just the agent's claim
+  that it succeeded. Injects timeouts, lost replies, crashes (`crash_at`), and duplicate deliveries, then verifies
+  external state and side effects: no lost task, no duplicate charge or write (`at_most_once`), no action after
+  a handoff (`expect(run).valid_handoffs()`), and no uncompensated actions left standing (`expect(run).no_orphaned_effects()`).
+  When a run fails, pinpoints the first broken transition and its downstream cascade effects
+  (`find_first_broken_transition()`) and reports it in `assay changes`.
 
 ## Not planned
 
@@ -417,8 +426,6 @@ phase are marked there too.
   reported per repository and team.
 
 ## Not built yet
-
-- **Cross-cutting agent reliability scenarios:** turn the reliability checks below into reusable end-to-end cases that can run before a prompt, model, tool-router or orchestration change, and on a schedule. Each handoff has an explicit input/output contract, permission scope and owner; each run is checked for the right terminal state, not just the agent's claim that it succeeded. Inject timeouts, lost acknowledgements, crashes and duplicate deliveries, then verify the external state and side effects: no lost task, no duplicate charge or write, no action after a handoff, and no job marked complete while work remains. When a run fails, report the first broken transition and its downstream effects. Reuse the existing trajectory, `faults()`, `at_most_once()`, read-back, recovery and recorded-run replay mechanisms rather than building a separate tracing system or an autonomous reviewer agent. Promote reviewed production failures into permanent cases through [Learning from production](learning.md).
 
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send

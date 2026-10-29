@@ -18,7 +18,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 __all__ = ["tool_calls", "assert_called", "assert_not_called", "assert_called_before", "assert_max_steps",
            "assert_answer_contains", "assert_no_pii", "expect", "Expectations", "rewordings",
-           "assert_within_scope", "assert_fails_closed", "assert_no_data_exfiltration", "assert_used_gateway"]
+           "assert_within_scope", "assert_fails_closed", "assert_no_data_exfiltration", "assert_used_gateway",
+           "assert_valid_handoffs", "assert_no_orphaned_effects", "assert_terminal_state"]
 
 
 def rewordings(*wordings: str, arg: str = "wording"):
@@ -188,6 +189,36 @@ def assert_used_gateway(run, gateway_host: str, model_hosts: Optional[Iterable[s
     bypasses = check_gateway_bypass(run, gateway_host, model_hosts=model_hosts)
     if bypasses:
         raise AssertionError(f"Gateway bypass: {bypasses[0]}")
+
+
+def assert_valid_handoffs(run, contracts: Sequence[Any]) -> None:
+    """Every agent handoff in the run must satisfy its contract and permission bounds."""
+    __tracebackhide__ = True
+    from assay_sdk.scenarios import validate_handoffs
+    v = validate_handoffs(run, contracts)
+    if v:
+        raise AssertionError(f"Handoff contract violation: {v[0]}")
+
+
+def assert_no_orphaned_effects(run, compensations: Dict[str, str]) -> None:
+    """Every side-effecting action followed by a failure must be properly compensated."""
+    __tracebackhide__ = True
+    from assay_sdk.scenarios import check_compensations
+    orphaned = check_compensations(run, compensations)
+    if orphaned:
+        raise AssertionError(f"Orphaned side-effect: {orphaned[0]}")
+
+
+def assert_terminal_state(run, expected: str = "resolved", read_back: Optional[Callable] = None) -> None:
+    """Run outcome and external read-back must both agree on the expected terminal state."""
+    __tracebackhide__ = True
+    actual = getattr(run, "outcome_value", None)
+    if actual != expected:
+        raise AssertionError(f"Terminal state mismatch: expected {expected!r}, got {actual!r}")
+    if read_back:
+        state = read_back()
+        if not state:
+            raise AssertionError("External read-back verification failed: empty state returned")
 
 
 # ---------- expect(run): everything a run should do, checked together when the test ends ----------
@@ -649,6 +680,60 @@ class Expectations:
             return None
 
         return self._add(f"used_gateway({gateway_host})", check)
+
+    def valid_handoffs(self, contracts: Sequence[Any]) -> "Expectations":
+        """Expect that every agent handoff satisfied input/output contracts and read-only/transfer promises."""
+        from assay_sdk.scenarios import validate_handoffs
+
+        def check():
+            violations = validate_handoffs(self.run, contracts)
+            if violations:
+                return violations[0]
+            return None
+
+        return self._add("valid_handoffs", check)
+
+    def terminal_state(self, expected: str = "resolved", read_back: Optional[Callable] = None) -> "Expectations":
+        """Expect that the run reached the expected terminal state and external system agrees."""
+        def check():
+            actual = getattr(self.run, "outcome_value", None)
+            if actual != expected:
+                return f"Terminal state mismatch: expected {expected!r}, got {actual!r}"
+            if read_back:
+                try:
+                    state = read_back()
+                    if not state:
+                        return "External read-back verification failed: empty state returned"
+                except Exception as exc:
+                    return f"External read-back failed with error: {exc}"
+            return None
+
+        return self._add(f"terminal_state({expected})", check)
+
+    def no_orphaned_effects(self, compensations: Dict[str, str]) -> "Expectations":
+        """Expect that any side-effecting action followed by a failure was compensated."""
+        from assay_sdk.scenarios import check_compensations
+
+        def check():
+            orphaned = check_compensations(self.run, compensations)
+            if orphaned:
+                return orphaned[0]
+            return None
+
+        return self._add("no_orphaned_effects", check)
+
+    def scenario_passed(self, scenario: Any) -> "Expectations":
+        """Expect that the entire cross-cutting reliability scenario passed with no broken transitions."""
+        def check():
+            res = scenario.evaluate(self.run)
+            if not res.passed:
+                first = res.failures[0] if res.failures else "scenario failed"
+                if res.broken_transition:
+                    return f"{first} ({res.broken_transition.summary()})"
+                return first
+            return None
+
+        return self._add(f"scenario_passed({scenario.name})", check)
 
     def failures(self) -> List[str]:
         """Every expectation that doesn't hold, as "name: why"."""

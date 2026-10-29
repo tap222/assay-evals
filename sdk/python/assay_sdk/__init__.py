@@ -39,7 +39,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 __all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correction", "expect", "prompt", "flush", "shutdown", "Run", "duplicate", "aduplicate", "DuplicateResult", "check_citations", "extract_citations", "Citation",
-           "Scope", "ScopeViolation", "PathWithin", "scope", "probe", "ProbeResult", "PolicyGate", "GateDecision", "PolicyGateReport", "evaluate_policy_gate", "scan_security_flags", "SecurityFlag", "check_gateway_bypass", "profile_agent_reach", "compare_agent_reach", "check_markdown_exfiltration", "check_untrusted_taint", "check_fails_closed"]
+           "Scope", "ScopeViolation", "PathWithin", "scope", "probe", "ProbeResult", "PolicyGate", "GateDecision", "PolicyGateReport", "evaluate_policy_gate", "scan_security_flags", "SecurityFlag", "check_gateway_bypass", "profile_agent_reach", "compare_agent_reach", "check_markdown_exfiltration", "check_untrusted_taint", "check_fails_closed",
+           "Scenario", "HandoffContract", "ScenarioResult", "BrokenTransition", "crash_at", "ProcessCrash", "validate_handoffs", "check_compensations", "find_first_broken_transition"]
 __version__ = "0.5.0"
 
 log = logging.getLogger("assay_sdk")
@@ -498,6 +499,8 @@ class Run:
         if "." in name and server is None and not name.startswith(("HTTP ", "SOCKET ", "CMD ", "FILE ")):
             server, name = name.split(".", 1)
         from assay_sdk.faults import call as fault_call, of as fault_of
+        from assay_sdk.scenarios import check_crash_point
+        check_crash_point(name, "before")
         started = datetime.now(timezone.utc)
         try:
             out, fault = fault_call(name, fn, positional, args)
@@ -506,7 +509,15 @@ class Run:
                       ended=datetime.now(timezone.utc), server=server, fault=fault_of(e))
             raise
         self.tool(name, args, out, started=started, ended=datetime.now(timezone.utc), server=server, fault=fault)
+        check_crash_point(name, "after")
         return out
+
+    def handoff(self, to_agent: str, kind: str = "transfer", payload: Optional[Dict[str, Any]] = None,
+                from_agent: Optional[str] = None, owner: Optional[str] = None) -> None:
+        """Record an agent handoff (take over task or request advice)."""
+        self._step("stage", None, name=f"handoff:{to_agent}",
+                   args={"from": from_agent or getattr(self, "agent_name", "agent"),
+                         "to": to_agent, "kind": kind, "payload": payload or {}, "owner": owner})
 
     def state(self, obj: str, op: str = "update", value: Any = None) -> None:
         """A change to the world, e.g. state("order:17", "update", {"qty": 3}). op: create, update, delete."""
@@ -788,4 +799,16 @@ from assay_sdk.scopes import (  # noqa: E402
     profile_agent_reach,
     scan_security_flags,
     scope,
+)
+# Cross-cutting agent reliability scenarios (assay_sdk/scenarios.py).
+from assay_sdk.scenarios import (  # noqa: E402
+    BrokenTransition,
+    HandoffContract,
+    ProcessCrash,
+    Scenario,
+    ScenarioResult,
+    check_compensations,
+    crash_at,
+    find_first_broken_transition,
+    validate_handoffs,
 )
