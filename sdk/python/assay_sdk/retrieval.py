@@ -55,6 +55,8 @@ def _one(x: Any, i: int, max_text: Optional[int] = MAX_TEXT) -> dict:
         score = score if score is not None else meta.get("score") or meta.get("relevance_score")
         source = _get(x, "source") if isinstance(x, dict) else None
         source = source or meta.get("source") or meta.get("file_name") or meta.get("url")
+        page = _get(x, "page") or meta.get("page") or meta.get("page_number")
+        section = _get(x, "section") or meta.get("section") or meta.get("sec")
     text = text if isinstance(text, str) else (None if text is None else str(text))
     out = {"id": str(fid) if fid is not None else str(i), "position": i}
     if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0:
@@ -65,6 +67,10 @@ def _one(x: Any, i: int, max_text: Optional[int] = MAX_TEXT) -> dict:
         out["score"] = float(score)
     if source:
         out["source"] = str(source)[:512]
+    if page is not None:
+        out["page"] = int(page) if str(page).isdigit() else str(page)
+    if section is not None:
+        out["section"] = str(section)[:128]
     if text:
         out["text"] = text if max_text is None else text[:max_text]
     return out

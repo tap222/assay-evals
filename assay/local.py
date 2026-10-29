@@ -58,7 +58,8 @@ CHECK_NAMES = {"plan_quality": "Plan quality", "consistency": "Consistency", "co
                "expect.must_abstain()": "Says the sources don't answer",
                "expect.must_not_abstain()": "Answers when the sources do",
                "expect.duplicate_safe()": "Duplicate request handled",
-               "expect.no_tool_collisions()": "No MCP tool collisions"}
+               "expect.no_tool_collisions()": "No MCP tool collisions",
+               "expect.citations_valid()": "Citations match sources"}
 PII_EVALUATOR = "assay.pii@1"
 
 CLAUDE_SKILL = ".claude/skills/assay/SKILL.md"

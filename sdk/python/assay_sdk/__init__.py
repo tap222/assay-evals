@@ -38,7 +38,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-__all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correction", "expect", "prompt", "flush", "shutdown", "Run", "duplicate", "aduplicate", "DuplicateResult"]
+__all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correction", "expect", "prompt", "flush", "shutdown", "Run", "duplicate", "aduplicate", "DuplicateResult", "check_citations", "extract_citations", "Citation"]
 __version__ = "0.5.0"
 
 log = logging.getLogger("assay_sdk")
@@ -718,3 +718,5 @@ from assay_sdk.golden import golden_examples  # noqa: E402
 from assay_sdk.faults import REAL, ToolFault, faults  # noqa: E402
 # Simulating duplicate requests (webhooks, double clicks) to test idempotency (assay_sdk/duplicate.py).
 from assay_sdk.duplicate import DuplicateResult, aduplicate, duplicate  # noqa: E402
+# Checking citations in RAG answers (assay_sdk/citations.py).
+from assay_sdk.citations import Citation, check_citations, extract_citations  # noqa: E402

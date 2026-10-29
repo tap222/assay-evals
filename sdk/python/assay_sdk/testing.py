@@ -446,6 +446,27 @@ class Expectations:
             return "; ".join(failures) if failures else None
         return self._add("duplicate_safe()" if not key else f"duplicate_safe(key={key!r})", rule)
 
+    def citations_valid(self, require_citations: bool = False) -> "Expectations":
+        """Every citation in the answer (a document, a page, a section) names a source that exists,
+        was retrieved, and says what the sentence citing it says. A right claim with the wrong page
+        fails as a wrong citation, not as a wrong answer."""
+        def rule():
+            from assay_sdk.citations import check_citations, extract_citations
+            answer = self.run.answer_text or ""
+            cits = extract_citations(answer)
+            if require_citations and not cits:
+                return "The answer gave no citations."
+            if not cits:
+                return None
+            frags = []
+            for s in self.run.steps:
+                if s.get("kind") == "retrieval":
+                    frags.extend(s.get("fragments") or [])
+            results = check_citations(answer, frags)
+            bad = [r.reason for r in results if not r.valid and r.reason]
+            return "; ".join(bad) if bad else None
+        return self._add("citations_valid()", rule)
+
     def checkpoint(self, name: str, rule: Optional[Callable[[Any], bool]] = None, *, tool: Optional[str] = None,
                    args: Optional[dict] = None, result: str = "ok", answer: Optional[str] = None) -> "Expectations":
         """A goal checkpoint of a long workflow, passing or failing on its own: rule(run) -> bool, or a

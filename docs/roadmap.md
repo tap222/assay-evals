@@ -358,6 +358,11 @@ phase are marked there too.
   one arbitrarily. `must_call("db.search")`, `must_not_call("web.search")`, and `at_most_once("payments.charge")`
   allow contracts and assertions to name tools by server. `expect(run).no_tool_collisions()` detects
   and flags when two MCP servers offer the same tool name in the same model call.
+- **Citations the answer gives, checked:** `expect(run).citations_valid()` checks each citation
+  (a document, a page, a section) against the sources retrieved in the run. It verifies that the cited
+  source exists and was retrieved, matches the cited page and section metadata, and actually says what
+  the sentence citing it says. A right claim with the wrong page fails as a wrong citation, not as a
+  wrong answer.
 
 ## Not planned
 
@@ -726,11 +731,6 @@ phase are marked there too.
   cases: wrong sentences the loop let through, right ones it rejected, how often a retry was
   wrong again, and the time and cost added per error avoided. A loop that adds time and avoids
   nothing (a strong model with the source already in the prompt) shows as such.
-- **Citations the answer gives, checked:** faithfulness checks the judge's evidence against the
-  fragments, not the answer's own citations. A citation (a document, a page, a section) should
-  be checked against the source it names: that source exists, was retrieved, and says what the
-  sentence citing it says. A right claim with the wrong page fails as a wrong citation, not as
-  a wrong answer.
 - **A judge tested by taking the evidence away:** a judge given the question, a reference answer
   and the answer, but not what was retrieved, scores agreement with the reference and calls it
   faithfulness. Each judge-based check should be run once on a copy of a passing case with the

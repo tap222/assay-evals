@@ -598,6 +598,21 @@ def test_refund_window(assay_case):
     rag(assay_case, "How long do refunds take?")
 ```
 
+**Citations the answer gives, checked.** Faithfulness checks whether claims are backed by fragments,
+but does not check the answer's own inline citations (`[policy.pdf, page 12]`, `(handbook.md, sec. 2)`).
+`expect(run).citations_valid()` checks each citation:
+  1. The cited source was retrieved in the run.
+  2. The cited page and section match the retrieved metadata.
+  3. The cited source actually says what the sentence citing it says.
+
+A right claim with the wrong page fails as a wrong citation, not as a wrong answer:
+
+```python
+def test_answer_citations(assay_case):
+    expect(assay_case).citations_valid(require_citations=True)
+    rag(assay_case, "What is the return window?")
+```
+
 An answer abstains when a sentence says the sources don't answer the question: "the documents
 don't say", "I couldn't find anything about", "not covered in the sources". "The policy doesn't
 cover water damage" is an answer, not an abstention. The two expectations are counted apart from
