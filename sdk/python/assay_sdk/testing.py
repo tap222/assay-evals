@@ -513,6 +513,26 @@ class Expectations:
 
         return self._add("no_logged_errors", check)
 
+    def no_external_touches(self, allow: Optional[Iterable[str]] = None) -> "Expectations":
+        """Expect that the test touched nothing real (no commands, non-local sockets, or outside file writes)."""
+        allowed = set(allow or [])
+
+        def check():
+            real_touches = []
+            for s in getattr(self.run, "steps", []):
+                name = s.get("name") or ""
+                if name.startswith(("CMD ", "SOCKET ", "FILE write ")):
+                    target = name.split(" ", 1)[1]
+                    if target not in allowed and not any(a in target for a in allowed):
+                        real_touches.append(name)
+            if real_touches:
+                touches_str = ", ".join(real_touches[:3])
+                extra = f" and {len(real_touches) - 3} more" if len(real_touches) > 3 else ""
+                return f"reached something real: {touches_str}{extra}"
+            return None
+
+        return self._add("no_external_touches", check)
+
     def failures(self) -> List[str]:
         """Every expectation that doesn't hold, as "name: why"."""
         out = []

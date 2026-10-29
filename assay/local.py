@@ -2932,6 +2932,14 @@ def finish(root: Path, cfg: dict, run_id: str, repeat: int, codes: List[int], ba
     if log_regressions:
         text += "\n" + _paint("\n".join([f"Logged error regressions ({len(log_regressions)}):",
                                           *(f"  {x['text']}" for x in log_regressions)]), "yellow")
+    from assay.reach import compare_real_touches, real_touches_from_db
+    now_touches = real_touches_from_db(engine, TENANT, run_id)
+    base_touches = real_touches_from_db(engine, TENANT, baseline) if baseline else {}
+    new_real_touches = compare_real_touches(now_touches, base_touches)
+    result["real_touches"] = new_real_touches
+    if new_real_touches:
+        text += "\n" + _paint("\n".join([f"Reached something real ({len(new_real_touches)}):",
+                                          *(f"  {x['text']}" for x in new_real_touches)]), "yellow")
     if baseline:  # what each case did, next to what its baseline did
         before, now = flows_before, flows_now
         result["flows"] = {c: (before[c]["flow"], now[c]["flow"]) for c in before.keys() & now.keys()

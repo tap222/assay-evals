@@ -113,6 +113,7 @@ def main(argv=None) -> int:
                                                         "(needs `pip install anthropic`; a model call per run)")
     t.add_argument("--base", metavar="REF", help="Also check the tests against this branch: assertions the change "
                                                   "removed or loosened (default: ASSAY_BASE_REF)")
+    t.add_argument("--offline", action="store_true", help="Opt-in offline mode: refuse non-local sockets and outside file writes")
     t.add_argument("command", nargs=argparse.REMAINDER, help="-- <command> (overrides assay.toml)")
     sub.add_parser("doctor", help="Is everything in place for the checks to run? What's missing, and the fix")
     gd = sub.add_parser("guard", help="Assertions a change removed or loosened, against the base branch "
@@ -417,8 +418,10 @@ def main(argv=None) -> int:
                 print(exc, file=sys.stderr)
                 return 2
         if args.cmd == "test":
+            from os import environ
+            if getattr(args, "offline", False):
+                environ["ASSAY_OFFLINE"] = "1"
             if args.base:  # read where the run is finished, by assay test and pytest --assay alike
-                from os import environ
                 environ["ASSAY_BASE_REF"] = args.base
             send = ({"url": args.url, "key": args.key, "tenant": args.send_tenant}
                     if local.upload_wanted(args.upload) else None)

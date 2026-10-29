@@ -89,6 +89,8 @@ def pytest_addoption(parser):
     g.addoption("--assay-rerun", choices=["failed"],
                 help="failed: run only the tests that didn't pass last time (regressed, new failures, flaky, "
                      "couldn't be judged, known failures)")
+    g.addoption("--assay-offline", "--offline", action="store_true", dest="assay_offline",
+                help="Opt-in offline mode: refuse non-local socket connections and block outside file writes")
 
 
 def _rerun_list(config) -> Optional[set]:
@@ -138,6 +140,10 @@ def pytest_configure(config):
     if (config.getoption("assay", False) or os.environ.get("ASSAY_TEST_RUN")) and _record_all(config):
         from assay_sdk import http_calls  # under pytest --assay or `assay test`: every test's outbound calls
         http_calls.record()
+    from assay_sdk.offline import enable_offline, record as record_offline
+    record_offline(getattr(config, "rootpath", None))
+    if config.getoption("assay_offline", False) or os.environ.get("ASSAY_OFFLINE") in ("1", "true", "yes"):
+        enable_offline(repo_root=getattr(config, "rootpath", None))
     if not config.getoption("assay", False):
         return
     for stream in (sys.stdout, sys.stderr):  # the report uses → ✓ ✗: a Windows pipe would fail on them

@@ -34,12 +34,14 @@ Everything found is ranked into one list, and the first three are shown:
 3. **Test runner configuration changes:** changes to files that decide how tests run (`conftest.py`,
    `pytest.ini`, `setup.cfg`, `tox.ini`, Jest/Vitest configs, `pyproject.toml` pytest options, `package.json` test scripts,
    or CI test workflow commands), with changed lines for confirmation.
-4. **New writes to check:** a placeholder saved, money left empty, a sent value that never reached
+4. **Tests reached something real:** commands started (`scp`, `rsync`, `psql`), non-local socket connections,
+   or file writes outside the repository and temp folders that the base branch's tests didn't touch.
+5. **New writes to check:** a placeholder saved, money left empty, a sent value that never reached
    a row ([database writes](../sdk/js/README.md#new-writes-checked)).
-5. **Changed lines no test ran**, money, messages, logins, database writes and outside calls first.
-6. **Deploy and dependency changes no CI job checked.**
-7. **Changed, still passing:** a case that takes another path now, though its checks pass.
-8. **The rest:** untested lines of lower risk, and expected values the change rewrote.
+6. **Changed lines no test ran**, money, messages, logins, database writes and outside calls first.
+7. **Deploy and dependency changes no CI job checked.**
+8. **Changed, still passing:** a case that takes another path now, though its checks pass.
+9. **The rest:** untested lines of lower risk, and expected values the change rewrote.
 
 One change seen in many cases is one item: "refund ran before its approval (refund_a, and 4 more
 cases)". Flaky tests are a count, not items: they did what they did before. Test results from a run on

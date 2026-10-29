@@ -376,6 +376,12 @@ phase are marked there too.
   function they came from; familiar errors occurring significantly more often (>= 3x) count as regressions.
   Templates logged at the same rate on the base branch are left out to keep suites quiet. `expect(run).no_logged_errors()`
   guards tests in the suite.
+- **Tests that reached something real:** monitors commands started (`scp`, `rsync`, `psql`), non-local socket
+  connections, and file writes outside the repository and temporary folders. Any real-world access not touched by
+  the base branch is caught and listed in the change report (`touched_real`). An opt-in offline mode
+  (`assay test --offline`, `pytest --assay --offline`, `assay.offline()`) refuses non-local sockets and blocks
+  outside writes loudly so forgotten fakes never reach real systems. `expect(run).no_external_touches()` guards
+  agent test cases.
 
 ## Not planned
 
@@ -395,18 +401,6 @@ phase are marked there too.
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send
   them to `POST /v1/ingest` directly, or use OpenTelemetry.
-- **Tests that reached something real:** tests fake tools one at a time, and the one nobody faked
-  runs for real. A coding agent's test copies files to the real backup server with `scp`, because
-  only `ssh` was faked, or a run of the new tests against the old code (to show they fail) calls
-  what the old code called. Assay records each test's outbound HTTP calls, not the rest. It should:
-  - **Record what else a test touched:** commands it started (`scp`, `rsync`, `psql`), connections
-    to hosts that aren't local, at the socket and not only HTTP, and files written outside the
-    repository and the test's temporary folders. Anything the base branch's tests didn't touch is
-    listed in the change report.
-  - **An opt-in offline mode** for the whole test process: connections are refused unless the
-    host is allowed, and writes outside the temporary folders fail. A fake someone forgot then
-    fails loudly instead of reaching the real system. It applies to every run Assay starts,
-    including a run against the base branch's code.
 - **Agent security: scope tests and security alerts.** An agent given credentials and a task can
   still reach what it wasn't meant to, and the organizations it happened to often didn't notice.
   Today a `never` contract, `must_not_call`, `must_get_approval_before`, the injection check and

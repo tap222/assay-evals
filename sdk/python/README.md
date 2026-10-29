@@ -168,7 +168,10 @@ to say so ("the documents don't say") rather than fill the gap. `.must_not_absta
 half, for a question they do answer. `expect(run).citations_valid()` checks that citations the answer
 gives match retrieved sources, pages, and claim support (a right claim with a wrong page fails as a
 wrong citation, not as a wrong answer). `expect(run).no_logged_errors()` guards against tests logging
-errors or warnings and still passing silently. `assay test` counts them apart (see
+errors or warnings and still passing silently. `expect(run).no_external_touches()` guards against tests
+reaching real-world systems (commands like `scp`, non-local sockets, outside writes). `assay.offline()` and
+`assay test --offline` provide an opt-in offline sandbox where non-local sockets are refused and outside
+file writes fail loudly. `assay test` counts them apart (see
 [faithfulness](../../docs/agents.md#faithfulness-is-the-answer-backed-by-what-was-retrieved)).
 
 `assay.claim_review(run_id, claim, verdict, evidence=..., correction=..., by=...)` records an

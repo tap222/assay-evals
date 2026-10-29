@@ -288,6 +288,11 @@ def init(url: Optional[str] = None, key: Optional[str] = None, *, tenant: Option
         log.info("Assay: no server set (ASSAY_URL); recording to %s", path)
     _client = _Client(url or "http://localhost", key or os.environ.get("ASSAY_KEY"), tenant, redact, sample,
                       flush_interval, batch_size, max_queue, strict, transport, enabled)
+    try:
+        from assay_sdk.offline import record as record_offline
+        record_offline()
+    except Exception:
+        pass
 
 
 def _c() -> _Client:
@@ -746,3 +751,5 @@ from assay_sdk.faults import REAL, ToolFault, faults  # noqa: E402
 from assay_sdk.duplicate import DuplicateResult, aduplicate, duplicate  # noqa: E402
 # Checking citations in RAG answers (assay_sdk/citations.py).
 from assay_sdk.citations import Citation, check_citations, extract_citations  # noqa: E402
+# Opt-in offline mode and monitoring real resource access (assay_sdk/offline.py).
+from assay_sdk.offline import disable_offline, enable_offline, offline  # noqa: E402
