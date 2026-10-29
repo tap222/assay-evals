@@ -363,6 +363,12 @@ phase are marked there too.
   source exists and was retrieved, matches the cited page and section metadata, and actually says what
   the sentence citing it says. A right claim with the wrong page fails as a wrong citation, not as a
   wrong answer.
+- **The files that decide how tests run, guarded like the tests:** changes to test runner configuration
+  files (`conftest.py`, `pytest.ini`, `setup.cfg`, `tox.ini`, Jest and Vitest configs, `pyproject.toml` pytest
+  options, `package.json` test scripts, and CI workflow test steps) are guarded alongside weakened
+  assertions with exact changed lines. `assay guard` lists them for human confirmation and halts unsafe merges
+  until marked intended. `assay changes --intended-stats` tracks which flags get marked intended and flags
+  kinds with high ignore rates before the rest stop being read.
 
 ## Not planned
 
@@ -382,21 +388,6 @@ phase are marked there too.
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send
   them to `POST /v1/ingest` directly, or use OpenTelemetry.
-- **The files that decide how tests run, guarded like the tests:** a coding agent told to make the
-  tests pass can leave every test file alone and change what runs them: a new `conftest.py` at the
-  root, `pytest.ini`, `[tool.pytest]` in `pyproject.toml`, a Jest or Vitest config or setup file,
-  the `test` script in `package.json`, the test command in CI. Today a test the base branch runs
-  that didn't run now fails the pull request, and assertions are compared with the base branch. Not
-  covered is a test that still runs but stops checking: a hook that rewrites a failure as a pass, a
-  fixture that swallows the error, an `assert` turned off. It should:
-  - **List a change to any of those files** in the guard, next to weakened assertions, with the
-    lines that changed, for a person to confirm.
-  - **Check results outside the test process:** the number of assertions that ran per test,
-    against the base branch, so a test that passes with none run is caught. A run whose results
-    Assay can't read from the tests themselves ends inconclusive, never passed on the exit code.
-  - **Count which flags get marked intended:** `assay.intended.toml` already keeps the reasons. Per
-    kind of flag, the share marked intended shows which ones people have learned to ignore, so they
-    get fixed or dropped before the rest stop being read.
 - **Errors a test logged and still passed:** an exception caught and logged, a fallback taken, a
   warning about a missing field. The test passes, and the log line that says something broke goes
   unread. Assay records what each test called and wrote, not what it logged. It should record the

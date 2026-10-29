@@ -130,6 +130,8 @@ def main(argv=None) -> int:
     ch.add_argument("--intended", type=int, metavar="N", help="Mark item N (as --all numbers them) intended, in "
                                                               "assay.intended.toml: it's left out until it changes")
     ch.add_argument("--reason", help="Why it's intended (needed with --intended)")
+    ch.add_argument("--intended-stats", action="store_true",
+                    help="Count which flags get marked intended and report the share marked intended per kind")
     u = sub.add_parser("upload", help="Send a test run (the latest, by default) to an Assay server")
     u.add_argument("run", nargs="?", help="A run id instead of the latest")
     for q in (t, u):
@@ -352,7 +354,8 @@ def main(argv=None) -> int:
     if args.cmd == "changes":
         from pathlib import Path
         from assay import changes
-        return changes.main(Path.cwd(), args.base, args.coverage, args.format, args.all, args.intended, args.reason)
+        return changes.main(Path.cwd(), args.base, args.coverage, args.format, args.all, args.intended, args.reason,
+                            getattr(args, "intended_stats", False))
     if args.cmd == "guard":
         from os import environ
         from pathlib import Path

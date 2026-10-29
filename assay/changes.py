@@ -544,9 +544,10 @@ def _item(x: dict) -> str:
 # list: what broke first, then what looks wrong, then what nothing checked. The verdict says
 # whether to merge; the first three items say what to look at; the rest is one line of counts.
 
-ORDER = ["regressed", "weakened", "new write", "untested, risky", "deploy", "changed", "untested", "expected value"]
-STOPS = {"regressed", "weakened"}  # what makes the verdict "not safe to merge"
+ORDER = ["regressed", "weakened", "runner_config", "new write", "untested, risky", "deploy", "changed", "untested", "expected value"]
+STOPS = {"regressed", "weakened", "runner_config"}  # what makes the verdict "not safe to merge"
 NOUN = {"regressed": ("regression", "regressions"), "weakened": ("weakened test", "weakened tests"),
+        "runner_config": ("test runner configuration change", "test runner configuration changes"),
         "new write": ("new write to check", "new writes to check"),
         "untested, risky": ("untested change", "untested changes"), "untested": ("untested change", "untested changes"),
         "deploy": ("unchecked deploy change", "unchecked deploy changes"),
@@ -574,6 +575,10 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
             case=e["name"])
     for f in w.weakening(weakened):
         add("weakened", w.describe(f))
+    for f in weakened:
+        if f.get("kind") == "runner_config":
+            add("runner_config", w.describe(f),
+                key=f"runner_config:{f['file']}:{f.get('lines_text', '')}")
     for c in (run or {}).get("write_checks") or []:
         names = c.get("names") or c.get("cases") or []
         add("new write", c["text"], key=f"write:{c['kind']}:{c['write']}:{c['field']}")
@@ -617,7 +622,16 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
 # ---------- marking an item intended ----------
 
 INTENDED = "assay.intended.toml"
-CAN_INTEND = {"new write", "untested, risky", "untested", "deploy", "changed", "expected value"}
+CAN_INTEND = {"runner_config", "new write", "untested, risky", "untested", "deploy", "changed", "expected value"}
+
+KEY_TO_KIND = {
+    "write": "new write",
+    "untested": "untested",
+    "deploy": "deploy",
+    "changed": "changed",
+    "expected": "expected value",
+    "runner_config": "runner_config",
+}
 
 
 def load_intended(root: Path) -> List[dict]:
@@ -636,11 +650,62 @@ def mark_intended(root: Path, item: dict, reason: str) -> Path:
     path = root / INTENDED
     head = "" if path.exists() else ("# Change-report items marked intended (`assay changes --intended N`). Each matches\n"
                                      "# only what was flagged then; a different change in the same place shows again.\n")
-    entry = (f"\n[[intended]]\nkey = {q(item['key'])}\nwhat = {q(item['text'])}\nby = {q(who())}\n"
+    entry = (f"\n[[intended]]\nkind = {q(item['kind'])}\nkey = {q(item['key'])}\nwhat = {q(item['text'])}\nby = {q(who())}\n"
              f"reason = {q(reason)}\non = {q(date.today().isoformat())}\n")
     with path.open("a", encoding="utf-8") as f:
         f.write(head + entry)
     return path
+
+
+def intended_stats(root: Path, current_items: Optional[List[dict]] = None) -> Dict[str, dict]:
+    """Counts which flags get marked intended and computes the share marked intended per kind.
+    Returns: {kind: {"intended": int, "active": int, "total": int, "share": float, "share_percent": str, "ignored": bool}}"""
+    intended_entries = load_intended(root)
+    counts: Dict[str, int] = {}
+    for entry in intended_entries:
+        kind = entry.get("kind")
+        if not kind:
+            prefix = (entry.get("key") or "").split(":", 1)[0]
+            kind = KEY_TO_KIND.get(prefix, prefix or "other")
+        counts[kind] = counts.get(kind, 0) + 1
+
+    active_counts: Dict[str, int] = {}
+    if current_items is not None:
+        marked_keys = {m.get("key") for m in intended_entries if m.get("key")}
+        for it in current_items:
+            k = it.get("kind")
+            if it.get("key") and it["key"] in marked_keys:
+                continue
+            active_counts[k] = active_counts.get(k, 0) + 1
+
+    all_kinds = sorted(set(list(counts.keys()) + list(active_counts.keys())))
+    out = {}
+    for k in all_kinds:
+        n_intended = counts.get(k, 0)
+        n_active = active_counts.get(k, 0)
+        total = n_intended + n_active
+        share = (n_intended / total) if total > 0 else 0.0
+        ignored = (total >= 2 and share >= 0.5)
+        out[k] = {
+            "intended": n_intended,
+            "active": n_active,
+            "total": total,
+            "share": round(share, 3),
+            "share_percent": f"{int(round(share * 100))}%",
+            "ignored": ignored,
+        }
+    return out
+
+
+def intended_stats_text(stats: Dict[str, dict]) -> str:
+    if not stats:
+        return "No items marked intended in assay.intended.toml."
+    lines = ["Intended flags by kind (share marked intended):"]
+    for kind, s in stats.items():
+        n_int, tot, pct = s["intended"], s["total"], s["share_percent"]
+        note = " (high ignore rate: consider fixing or dropping these checks)" if s.get("ignored") else ""
+        lines.append(f"  - {kind}: {n_int} of {tot} marked intended ({pct}){note}")
+    return "\n".join(lines)
 
 
 def verdict(found: List[dict]) -> str:
@@ -677,8 +742,10 @@ def report(root: Path, d: dict) -> dict:
     for x in found[SHOW:]:
         rest[x["kind"]] = rest.get(x["kind"], 0) + 1
     flaky = len((run or {}).get("flaky") or [])
+    stats = intended_stats(root, everything)
     return {"verdict": verdict(found), "items": found, "rest": rest, "flaky": flaky,
             "intended": len(everything) - len(found),
+            "intended_stats": stats,
             "run": None if run is None else {"current": run["current"]["label"], "baseline": run["baseline"]["label"],
                                              "scenarios": run["scenarios"]},
             "no_run": why if run is None else None, "changes": d}
@@ -742,9 +809,11 @@ def report_markdown(r: dict, limit: int = SHOW) -> str:
 
 
 def main(root: Path, base: Optional[str], coverage: Optional[str], fmt: str, show_all: bool,
-         intended: Optional[int] = None, reason: Optional[str] = None) -> int:
+         intended: Optional[int] = None, reason: Optional[str] = None,
+         show_intended_stats: bool = False) -> int:
     """`assay changes`: 0 with a report (nothing here fails), 2 when it can't run. With intended,
-    marks that item of the report (as `--all` numbers them) intended instead."""
+    marks that item of the report (as `--all` numbers them) intended instead. With show_intended_stats,
+    reports the share marked intended per kind."""
     import sys
     from assay import weakening
     ref = weakening.base_ref(root, base) if base or os.environ.get(weakening.BASE_ENV) else weakening.default_base(root)
@@ -763,6 +832,10 @@ def main(root: Path, base: Optional[str], coverage: Optional[str], fmt: str, sho
         return 2
     limit = 10 ** 9 if show_all else SHOW
     r = report(root, d)
+    if show_intended_stats:
+        stats = r.get("intended_stats") or intended_stats(root, r.get("items"))
+        print(json.dumps(stats, indent=2) if fmt == "json" else intended_stats_text(stats))
+        return 0
     if intended is not None:
         if not 1 <= intended <= len(r["items"]):
             print(f"There's no item {intended}: the report has {len(r['items'])} (`assay changes --all` numbers "

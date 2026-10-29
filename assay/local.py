@@ -2768,7 +2768,7 @@ def guard_only(root: Path, home: Path) -> int:
     md = [MARKER, f"## {head}", "", "No Assay tests ran here, so the tests' assertions were checked against the "
           f"base branch ({_md(ref)}).", ""]
     for f in found:
-        verb = "changes" if f["kind"] == "rewritten" else "loosens"
+        verb = "changes" if f["kind"] in ("rewritten", "runner_config") else "loosens"
         md.append(f"- {verb}: {_md(weakening.describe(f))}")
     if code == 1 and not accepted:
         md += ["", "Fix the test, or add the `assay-policy-change` label to accept the change."]
@@ -2892,17 +2892,21 @@ def finish(root: Path, cfg: dict, run_id: str, repeat: int, codes: List[int], ba
     result["weakened_tests"] = found
     _save_meta(home, run_id, {"ran_by": ran_by(root), "weakened_tests": found})
     if found:
-        loose, notes = weakening.weakening(found), [f for f in found if f["kind"] == "rewritten"]
+        loose = weakening.weakening(found)
+        configs = [f for f in found if f.get("kind") == "runner_config"]
+        notes = [f for f in found if f.get("kind") == "rewritten"]
         if policy is not None:  # a PR: a weakened test loosens the checks like removing a contract
             policy = {**policy, "changes": [*policy["changes"],
                                             *({"text": weakening.describe(f), "weakens": True} for f in loose),
+                                            *({"text": weakening.describe(f), "weakens": True} for f in configs),
                                             *({"text": weakening.describe(f), "weakens": False, "note": True} for f in notes)]}
-            if loose:
+            if loose or configs:
                 policy["weakened"] = policy["weakened"] or not policy["accepted"]
         else:
             lines = [*(f"Weakened against {os.environ.get(weakening.BASE_ENV)}: {weakening.describe(f)}" for f in loose),
+                     *(f"Runner config changed: {weakening.describe(f)}" for f in configs),
                      *(f"Expected value changed: {weakening.describe(f)}" for f in notes)]
-            text += "\n" + _paint("\n".join(lines), "yellow" if loose else "dim")
+            text += "\n" + _paint("\n".join(lines), "yellow" if (loose or configs) else "dim")
     if not policy and not subset and abandoned_why is None:
         state["suite"] = sorted(ran_all)
     if policy_lines(policy):

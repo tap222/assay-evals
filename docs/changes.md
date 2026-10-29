@@ -31,12 +31,15 @@ Everything found is ranked into one list, and the first three are shown:
 1. **Regressed:** a case that passed on its baseline and fails now, from the last `assay test`
    or `pytest --assay` run, with what changed next to it (a prompt, a model, a tool's definition).
 2. **Weakened:** an assertion loosened or removed ([the guard](security.md)).
-3. **New writes to check:** a placeholder saved, money left empty, a sent value that never reached
+3. **Test runner configuration changes:** changes to files that decide how tests run (`conftest.py`,
+   `pytest.ini`, `setup.cfg`, `tox.ini`, Jest/Vitest configs, `pyproject.toml` pytest options, `package.json` test scripts,
+   or CI test workflow commands), with changed lines for confirmation.
+4. **New writes to check:** a placeholder saved, money left empty, a sent value that never reached
    a row ([database writes](../sdk/js/README.md#new-writes-checked)).
-4. **Changed lines no test ran**, money, messages, logins, database writes and outside calls first.
-5. **Deploy and dependency changes no CI job checked.**
-6. **Changed, still passing:** a case that takes another path now, though its checks pass.
-7. **The rest:** untested lines of lower risk, and expected values the change rewrote.
+5. **Changed lines no test ran**, money, messages, logins, database writes and outside calls first.
+6. **Deploy and dependency changes no CI job checked.**
+7. **Changed, still passing:** a case that takes another path now, though its checks pass.
+8. **The rest:** untested lines of lower risk, and expected values the change rewrote.
 
 One change seen in many cases is one item: "refund ran before its approval (refund_a, and 4 more
 cases)". Flaky tests are a count, not items: they did what they did before. Test results from a run on
@@ -59,6 +62,12 @@ sees it and a reviewer reads the reason in the pull request. Each mark matches o
 flagged: the same unrun lines, the same file contents, the same behavior change. If that changes
 again, the item comes back. Regressions and weakened tests can't be marked here: `assay accept`,
 `assay ack` and the policy label are for those.
+
+Track which flags get marked intended and identify kinds people have learned to ignore:
+
+```bash
+assay changes --intended-stats
+```
 
 ## Changed lines no test ran
 
