@@ -111,6 +111,7 @@ class Step(_E):
     tool_calls: Optional[List[Dict[str, Any]]] = Field(None, max_length=200, description="llm: the tool calls the "
                                                                                           "model asked for")
     tool_collisions: Optional[List[Dict[str, Any]]] = Field(None, description="llm: colliding tool names offered by multiple MCP servers")
+    raw_tools: Optional[List[Any]] = Field(None, description="llm: raw tool definitions offered to the model")
     tokens_cached: Optional[int] = Field(None, ge=0)
     tokens_reasoning: Optional[int] = Field(None, ge=0)
     context: Optional[Dict[str, int]] = Field(None, description='llm: what the input was made of, in tokens: '

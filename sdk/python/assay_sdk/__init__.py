@@ -38,7 +38,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-__all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correction", "expect", "prompt", "flush", "shutdown", "Run", "duplicate", "aduplicate", "DuplicateResult", "check_citations", "extract_citations", "Citation"]
+__all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correction", "expect", "prompt", "flush", "shutdown", "Run", "duplicate", "aduplicate", "DuplicateResult", "check_citations", "extract_citations", "Citation",
+           "Scope", "ScopeViolation", "PathWithin", "scope", "probe", "ProbeResult", "PolicyGate", "GateDecision", "PolicyGateReport", "evaluate_policy_gate", "scan_security_flags", "SecurityFlag", "check_gateway_bypass", "profile_agent_reach", "compare_agent_reach", "check_markdown_exfiltration", "check_untrusted_taint", "check_fails_closed"]
 __version__ = "0.5.0"
 
 log = logging.getLogger("assay_sdk")
@@ -320,6 +321,7 @@ class Run:
         self.original_run_id: Optional[str] = None
         self.task: Optional[str] = None
         self.logged_errors: List[Dict[str, Any]] = []
+        self.scope_violations: List[Any] = []
 
     def _case(self) -> Dict[str, Any]:
         if not self.test:
@@ -395,11 +397,24 @@ class Run:
              fault: Optional[str] = None) -> None:
         """A tool call you've already made. server: the MCP server it went to, if any. fault: the fault
         assay.faults() injected in its place (empty, error, timeout, return)."""
-        if "." in name and server is None:
+        if "." in name and server is None and not name.startswith(("HTTP ", "SOCKET ", "CMD ", "FILE ")):
             server, name = name.split(".", 1)
         from assay_sdk.llm import normalize_args  # a JSON string, a list, a value: never rejected
-        self._step("tool", started, name=name, args=self._c.clean(normalize_args(args)), result=self._c.clean(result),
+        cleaned_args = self._c.clean(normalize_args(args))
+        from assay_sdk.scopes import _current_scope
+        sc = _current_scope.get()
+        if sc is not None:
+            v = sc.check_call(name, cleaned_args, seq=len(self.steps))
+            if v:
+                self.scope_violations.extend(v)
+        self._step("tool", started, name=name, args=cleaned_args, result=self._c.clean(result),
                    ended_at=_ts(ended), status="error" if error else "ok", error=error, server=server, fault=fault)
+
+    def gate(self, tool: str, decision: str, reason: str, policy_version: str = "v1",
+             args: Optional[Dict[str, Any]] = None) -> None:
+        """Record a policy gate decision (allow, block, needs_approval) in front of a tool call."""
+        self._step("approval", None, name=tool, decision=decision, error=reason if decision == "block" else None,
+                   args={"reason": reason, "policy_version": policy_version, **(args or {})})
 
     def resource(self, uri: str, contents: Any = None, server: Optional[str] = None, error: Optional[str] = None,
                  started: Optional[datetime] = None, ended: Optional[datetime] = None) -> None:
@@ -480,7 +495,7 @@ class Run:
     def call(self, name: str, fn: Callable, *positional, server: Optional[str] = None, **args):
         """Call fn(*positional, **args), record it as a tool call (result or error, and timing), and
         return its result. Exceptions are recorded, then re-raised."""
-        if "." in name and server is None:
+        if "." in name and server is None and not name.startswith(("HTTP ", "SOCKET ", "CMD ", "FILE ")):
             server, name = name.split(".", 1)
         from assay_sdk.faults import call as fault_call, of as fault_of
         started = datetime.now(timezone.utc)
@@ -753,3 +768,24 @@ from assay_sdk.duplicate import DuplicateResult, aduplicate, duplicate  # noqa: 
 from assay_sdk.citations import Citation, check_citations, extract_citations  # noqa: E402
 # Opt-in offline mode and monitoring real resource access (assay_sdk/offline.py).
 from assay_sdk.offline import disable_offline, enable_offline, offline  # noqa: E402
+# Agent security scopes, fails-closed, probes, gates, taint, and flags (assay_sdk/scopes.py).
+from assay_sdk.scopes import (  # noqa: E402
+    GateDecision,
+    PathWithin,
+    PolicyGate,
+    PolicyGateReport,
+    ProbeResult,
+    Scope,
+    ScopeViolation,
+    SecurityFlag,
+    check_fails_closed,
+    check_gateway_bypass,
+    check_markdown_exfiltration,
+    check_untrusted_taint,
+    compare_agent_reach,
+    evaluate_policy_gate,
+    probe,
+    profile_agent_reach,
+    scan_security_flags,
+    scope,
+)

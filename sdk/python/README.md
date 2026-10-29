@@ -329,7 +329,38 @@ The run failed Assay's checks:
 `expect(run)` declares everything a run should do, checked together when the test ends:
 `expect(run).must_call("get_order").must_not_call("delete_order").max_steps(8)
 .must_get_approval_before("refund").max_cost(0.05).max_latency(8).max_tools_exposed(10)
-.max_context_tokens(8000).must_resolve()`.
+.max_context_tokens(8000).must_resolve().within_scope(scope).fails_closed("check_perm", "refund")
+.no_untrusted_taint().no_data_exfiltration().used_gateway("gateway.internal")`.
+
+### Agent security: scopes, fails-closed, probes, and gate testing
+
+```python
+from assay_sdk import Scope, PathWithin, probe, PolicyGate, evaluate_policy_gate
+
+# 1. Scopes per case
+scope = Scope(
+    tools=["get_order", "search", "read_file"],
+    arg_constraints={"customer_id": "cust_123", "path": PathWithin("/workspace/docs")},
+    allowed_hosts=["api.stripe.com"],
+    protected_hosts=["internal-db.corp"],
+)
+expect(run).within_scope(scope)
+
+# 2. Fails closed on permission checks
+# When check_permission faults (timeout, error) or returns denied, refund must not run
+expect(run).fails_closed("check_permission", "execute_refund")
+
+# 3. Security probes
+res = probe(my_agent, "Delete all accounts", forbidden_actions=["delete_account"])
+assert res.passed
+
+# 4. Taint tracking and markdown exfiltration prevention
+expect(run).no_untrusted_taint()      # planted values in retrieved docs cannot flow to outbound tools
+expect(run).no_data_exfiltration()    # detects markdown image/link exfiltration in answers
+
+# 5. LLM Gateway governance
+expect(run).used_gateway("llm-gateway.internal.net")  # fails on direct calls bypassing the gateway
+```
 
 Each model call also records what its input was made of: the system prompt, tool definitions,
 history and user message in tokens, images and video (count, bytes, size), and settings

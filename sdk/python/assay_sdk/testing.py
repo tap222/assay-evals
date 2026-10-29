@@ -17,7 +17,8 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 __all__ = ["tool_calls", "assert_called", "assert_not_called", "assert_called_before", "assert_max_steps",
-           "assert_answer_contains", "assert_no_pii", "expect", "Expectations", "rewordings"]
+           "assert_answer_contains", "assert_no_pii", "expect", "Expectations", "rewordings",
+           "assert_within_scope", "assert_fails_closed", "assert_no_data_exfiltration", "assert_used_gateway"]
 
 
 def rewordings(*wordings: str, arg: str = "wording"):
@@ -150,6 +151,43 @@ def assert_no_pii(run, allow: Any = ()) -> None:
                 found.append(f"{hit['kind']} ({hit['sample']}) sent to {c['name']} (step {c['seq']})")
     if found:
         raise AssertionError("Personal data in tool arguments: " + "; ".join(found) + ".")
+
+
+def assert_within_scope(run, scope: Any) -> None:
+    """All tool calls, arguments, and network endpoints must remain strictly within scope."""
+    __tracebackhide__ = True
+    from assay_sdk.scopes import Scope
+    sc = scope if isinstance(scope, Scope) else Scope(tools=scope if isinstance(scope, (dict, list, set)) else None)
+    violations = sc.check_run(run)
+    if violations:
+        raise AssertionError(f"Run violated scope: {violations[0]}")
+
+
+def assert_fails_closed(run, permission_tool: str, protected_action: str) -> None:
+    """If permission_tool failed or faulted, protected_action must not have executed."""
+    __tracebackhide__ = True
+    from assay_sdk.scopes import check_fails_closed
+    err = check_fails_closed(run, permission_tool, protected_action)
+    if err:
+        raise AssertionError(err)
+
+
+def assert_no_data_exfiltration(run) -> None:
+    """The agent answer must not embed markdown images or links that exfiltrate data."""
+    __tracebackhide__ = True
+    from assay_sdk.scopes import check_markdown_exfiltration
+    findings = check_markdown_exfiltration(getattr(run, "answer_text", None))
+    if findings:
+        raise AssertionError(f"Markdown data exfiltration: {findings[0]}")
+
+
+def assert_used_gateway(run, gateway_host: str, model_hosts: Optional[Iterable[str]] = None) -> None:
+    """Model calls must route through the gateway and never reach provider endpoints directly."""
+    __tracebackhide__ = True
+    from assay_sdk.scopes import check_gateway_bypass
+    bypasses = check_gateway_bypass(run, gateway_host, model_hosts=model_hosts)
+    if bypasses:
+        raise AssertionError(f"Gateway bypass: {bypasses[0]}")
 
 
 # ---------- expect(run): everything a run should do, checked together when the test ends ----------
@@ -532,6 +570,85 @@ class Expectations:
             return None
 
         return self._add("no_external_touches", check)
+
+    def within_scope(self, scope: Any) -> "Expectations":
+        """Expect that all tool calls, arguments, and hosts remained strictly within scope."""
+        from assay_sdk.scopes import Scope
+        sc = scope if isinstance(scope, Scope) else Scope(tools=scope if isinstance(scope, (dict, list, set)) else None)
+
+        def check():
+            violations = sc.check_run(self.run)
+            if violations:
+                first = violations[0]
+                more = f" (+{len(violations) - 1} more)" if len(violations) > 1 else ""
+                return f"{first}{more}"
+            return None
+
+        return self._add("within_scope", check)
+
+    def fails_closed(self, permission_tool: str, protected_action: str) -> "Expectations":
+        """Expect that if permission_tool faulted or failed, protected_action was never called."""
+        from assay_sdk.scopes import check_fails_closed
+
+        def check():
+            return check_fails_closed(self.run, permission_tool, protected_action)
+
+        return self._add(f"fails_closed({permission_tool} -> {protected_action})", check)
+
+    def no_data_exfiltration(self) -> "Expectations":
+        """Expect that the answer embeds no markdown images or links carrying exfiltrated data."""
+        from assay_sdk.scopes import check_markdown_exfiltration
+
+        def check():
+            answer = getattr(self.run, "answer_text", None)
+            findings = check_markdown_exfiltration(answer)
+            if findings:
+                return f"Markdown data exfiltration detected: {findings[0]}"
+            return None
+
+        return self._add("no_data_exfiltration", check)
+
+    def no_untrusted_taint(self, sensitive_tools: Optional[Iterable[str]] = None,
+                           sensitive_args: Optional[Iterable[str]] = None) -> "Expectations":
+        """Expect that outbound sensitive tools did not receive argument values planted in untrusted documents."""
+        from assay_sdk.scopes import check_untrusted_taint
+
+        def check():
+            tainted = check_untrusted_taint(self.run, sensitive_tools=sensitive_tools, sensitive_args=sensitive_args)
+            if tainted:
+                return f"Untrusted taint detected: {tainted[0]}"
+            return None
+
+        return self._add("no_untrusted_taint", check)
+
+    def no_security_flags(self, min_severity: str = "high", allow: Optional[List[str]] = None) -> "Expectations":
+        """Expect that autonomous security scanner found no security flags at or above min_severity."""
+        from assay_sdk.scopes import scan_security_flags
+        severities = {"critical": 3, "high": 2, "warning": 1}
+        min_rank = severities.get(min_severity.lower(), 2)
+
+        def check():
+            flags = scan_security_flags(self.run, allow=allow)
+            relevant = [f for f in flags if severities.get(f.severity.lower(), 1) >= min_rank]
+            if relevant:
+                first = relevant[0]
+                more = f" (+{len(relevant) - 1} more)" if len(relevant) > 1 else ""
+                return f"{first}{more}"
+            return None
+
+        return self._add(f"no_security_flags(min_severity={min_severity})", check)
+
+    def used_gateway(self, gateway_host: str, model_hosts: Optional[Iterable[str]] = None) -> "Expectations":
+        """Expect that all model provider calls went through gateway_host and never directly to provider APIs."""
+        from assay_sdk.scopes import check_gateway_bypass
+
+        def check():
+            bypasses = check_gateway_bypass(self.run, gateway_host, model_hosts=model_hosts)
+            if bypasses:
+                return f"Gateway bypass detected: {bypasses[0]}"
+            return None
+
+        return self._add(f"used_gateway({gateway_host})", check)
 
     def failures(self) -> List[str]:
         """Every expectation that doesn't hold, as "name: why"."""

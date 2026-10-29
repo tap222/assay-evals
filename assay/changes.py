@@ -544,12 +544,14 @@ def _item(x: dict) -> str:
 # list: what broke first, then what looks wrong, then what nothing checked. The verdict says
 # whether to merge; the first three items say what to look at; the rest is one line of counts.
 
-ORDER = ["regressed", "weakened", "runner_config", "logged_error", "touched_real", "new write", "untested, risky", "deploy", "changed", "untested", "expected value"]
-STOPS = {"regressed", "weakened", "runner_config", "logged_error", "touched_real"}  # what makes the verdict "not safe to merge"
-NOUN = {"regressed": ("regression", "regressions"), "weakened": ("weakened test", "weakened tests"),
+ORDER = ["security_violation", "regressed", "weakened", "runner_config", "logged_error", "touched_real", "widened_reach", "new write", "untested, risky", "deploy", "changed", "untested", "expected value"]
+STOPS = {"security_violation", "regressed", "weakened", "runner_config", "logged_error", "touched_real"}  # what makes the verdict "not safe to merge"
+NOUN = {"security_violation": ("security violation", "security violations"),
+        "regressed": ("regression", "regressions"), "weakened": ("weakened test", "weakened tests"),
         "runner_config": ("test runner configuration change", "test runner configuration changes"),
         "logged_error": ("logged error regression", "logged error regressions"),
         "touched_real": ("real system access", "real system accesses"),
+        "widened_reach": ("widened agent reach", "widened agent reach"),
         "new write": ("new write to check", "new writes to check"),
         "untested, risky": ("untested change", "untested changes"), "untested": ("untested change", "untested changes"),
         "deploy": ("unchecked deploy change", "unchecked deploy changes"),
@@ -581,6 +583,14 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
         if f.get("kind") == "runner_config":
             add("runner_config", w.describe(f),
                 key=f"runner_config:{f['file']}:{f.get('lines_text', '')}")
+    for s in (run or {}).get("security_violations") or []:
+        add("security_violation", s["text"], detail=s.get("detail", ""),
+            key=s.get("key") or f"security:{s['text']}",
+            case=s.get("cases", [None])[0] if s.get("cases") else None)
+    for r in (run or {}).get("widened_reach") or []:
+        add("widened_reach", r["text"], detail=r.get("detail", ""),
+            key=r.get("key") or f"reach:{r['text']}",
+            case=r.get("cases", [None])[0] if r.get("cases") else None)
     for e in (run or {}).get("logged_errors") or []:
         add("logged_error", e["text"], detail=e.get("detail", ""),
             key=e.get("key") or f"logged_error:{e['template']}", case=e.get("cases", [None])[0] if e.get("cases") else None)
@@ -631,7 +641,7 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
 # ---------- marking an item intended ----------
 
 INTENDED = "assay.intended.toml"
-CAN_INTEND = {"runner_config", "logged_error", "touched_real", "new write", "untested, risky", "untested", "deploy", "changed", "expected value"}
+CAN_INTEND = {"runner_config", "logged_error", "touched_real", "widened_reach", "new write", "untested, risky", "untested", "deploy", "changed", "expected value"}
 
 KEY_TO_KIND = {
     "write": "new write",

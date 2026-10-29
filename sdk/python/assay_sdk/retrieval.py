@@ -31,6 +31,7 @@ def _get(x: Any, *names: str):
 
 def _one(x: Any, i: int, max_text: Optional[int] = MAX_TEXT) -> dict:
     score = None
+    page = section = None
     if isinstance(x, tuple) and len(x) == 2 and isinstance(x[1], (int, float)):  # (document, score)
         x, score = x
     if isinstance(x, str):

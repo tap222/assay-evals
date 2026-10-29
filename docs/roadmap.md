@@ -382,6 +382,28 @@ phase are marked there too.
   (`assay test --offline`, `pytest --assay --offline`, `assay.offline()`) refuses non-local sockets and blocks
   outside writes loudly so forgotten fakes never reach real systems. `expect(run).no_external_touches()` guards
   agent test cases.
+- **Agent security: scope tests and security alerts:** per-case scope tests, fails-closed permission
+  checks, security probes, provenance taint tracking, markdown data exfiltration detection, policy gate
+  evaluation, autonomous security scanning, gateway governance, and agent reach profiling:
+  - **A scope per case:** `Scope(tools=..., arg_constraints=..., allowed_hosts=..., protected_hosts=..., base_path=...)`
+    and `expect(run).within_scope(scope)` enforce allowed tools, parameter values, canonical path resolution
+    (`PathWithin` preventing `../` traversal or symlink escapes), and protected/allowed network endpoints.
+  - **Fails closed:** `expect(run).fails_closed(permission_tool, protected_action)` verifies that when permission
+    checks fail or fault (error, timeout, lost), protected operations never execute.
+  - **Probes:** `probe(agent_fn, prompt, forbidden_actions=[...])` verifies agent refusal and boundary safety on
+    adversarial prompts.
+  - **Planted values, taint tracking, and exfiltration:** catches prompt injection planted in retrieved document
+    fragments (`kind == "retrieval"`), flags untrusted values passed to outbound tools (`expect(run).no_untrusted_taint()`),
+    and detects markdown image/link exfiltration in answers (`expect(run).no_data_exfiltration()`).
+  - **Policy gate evaluation:** `PolicyGate` and `evaluate_policy_gate(decisions)` track allow/block/needs_approval
+    decisions across policy versions, reporting normal blocked rates and attacks allowed rates.
+  - **Autonomous security scanner:** `scan_security_flags(run)` inspects runs without pre-written rules, flagging
+    secrets (.env, keys, tokens), destructive actions (`rm -rf`, DROP TABLE, refunds), privilege escalation (`sudo`,
+    chmod 777), and data leaving (`expect(run).no_security_flags()`).
+  - **Agent reach profiling & widening:** `profile_agent_reach()` profiles capabilities (read, write, delete, spend money,
+    send messages, outside hosts), and flags capability widening in `assay changes`.
+  - **Gateway governance:** `check_gateway_bypass(run, gateway_host)` and `expect(run).used_gateway(gateway_host)`
+    fail tests whose code calls model providers or governed services directly instead of through the gateway.
 
 ## Not planned
 
@@ -401,78 +423,7 @@ phase are marked there too.
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send
   them to `POST /v1/ingest` directly, or use OpenTelemetry.
-- **Agent security: scope tests and security alerts.** An agent given credentials and a task can
-  still reach what it wasn't meant to, and the organizations it happened to often didn't notice.
-  Today a `never` contract, `must_not_call`, `must_get_approval_before`, the injection check and
-  the personal-data check catch it in tests, and recorded HTTP calls show a request made around
-  the tools. Production alerts watch rates over runs, which suits quality and is too slow for this.
-  - **A scope per case:** the tools an agent may call and the argument values they may take (this
-    customer's account, not any account), checked against the actual operation and parameters.
-    Anything else fails, including an HTTP call to a protected host made another way. Values are
-    compared after they're resolved, so `/reports/q3/../payroll`, a symlink or a glob can't pass for
-    the path the scope allows.
-  - **Fails closed:** `faults()` on the permission check (error, timeout) and a check that the
-    protected action didn't run anyway.
-  - **Probes:** cases that ask, or inject an instruction, for an out-of-scope action, so the
-    boundary is tested on every pull request rather than assumed.
-  - **Injected instructions that change a value, not the tool:** the injection check reads tool
-    and resource results and catches a call the injected text named, a broken contract, or a call
-    the case didn't expect. It misses two things. Retrieved documents aren't read, though a planted
-    document is the usual way in. And an expected call with a planted value passes: the right
-    `send_email`, to the attacker's address. Each argument should carry where its value came from
-    (the user, a trusted tool, or text the agent read), and a value that came only from untrusted
-    text and goes to an outside destination (an address, a URL, an account, an amount) is flagged.
-    One zero-width space or full-width letter inside "ignore all previous instructions" used to hide
-    it; text is now normalized first (built: Unicode compatibility forms, zero-width and invisible
-    characters removed, look-alike Cyrillic and Greek letters made Latin). An answer that embeds
-    a markdown image or link whose address carries data (`![x](https://host/?q=...)`) leaks it the
-    moment a chat window renders it, so that's flagged as data leaving.
-  - **Testing the gate itself:** teams put a policy gate in front of tool calls (allow, block, needs
-    approval). Keeping its policy right as it changes is the hard part: too strict and normal work
-    stops, too loose and attacks pass. Recording each gate decision with its reason and policy
-    version lets cases check it: attack cases must be blocked, normal ones allowed. The report
-    gives the share of normal calls blocked and attacks let through, per policy version, and what a
-    policy change moved.
-  - **Security flags on what agents access and run, in production:** people now approve almost
-    everything an agent asks, so a click can't be the safeguard. Assay already sees each tool
-    call, its arguments and the HTTP requests a run makes. It should flag the security-relevant
-    ones by itself, with no rules to write first, approved or not:
-    - **Secrets and credentials:** reading `.env`, keys, tokens, `~/.ssh`, cloud credentials, or a
-      secret appearing in a tool's arguments, result or the answer.
-    - **Destructive or irreversible actions:** deletes, drops, `rm -rf`, force pushes, payments,
-      refunds, emails to many people.
-    - **Privilege and reach:** `sudo`, permission changes, new users or keys, access to another
-      customer's records, a host outside the usual list, a download piped into a shell.
-    - **Data leaving:** personal data sent to a tool or host that doesn't need it.
-    Each flag names the run, the step, what it touched and why it matters, with its severity.
-    High severity alerts at once to Slack or a webhook (not after a rate moves, as quality alerts
-    do), grouped so one bad deploy is one alert. Flags a team marks as expected become the
-    allowed list; the rest become tests, so the same action is caught in CI before the next
-    deploy. The same flags apply to the coding agents that build the app, through their hooks.
-  - **What an agent could reach, and when that grows:** an agent's risk is everything its tools
-    allow, not only what it's meant to do, and that grows quietly, one integration at a time. Assay
-    records every tool an agent is offered, with its definition, but doesn't say what they reach. It
-    should sort each tool by what it can do (read, write, delete, spend money, send messages, call
-    outside hosts) and over what (this customer's records or any). Each agent gets one map of its
-    reach, next to what it actually used. A pull request that widens it is an item in the change
-    report: "the support agent gains `issue_refund` (spends money, any customer)". It isn't a
-    failure, because the change may be intended, but nobody approves it without seeing it.
-  - **Calls that go around the gateway:** an LLM gateway or agent gateway (LiteLLM, Portkey, an
-    internal proxy) only governs the calls that reach it. An agent with a provider key and network
-    access can call a model, an MCP server or a tool's API directly, and the gateway never sees it.
-    Assay records model calls and outbound HTTP, but not where a model call went: a call through
-    the gateway and one straight to `api.openai.com` look the same. It should:
-    - **Record each call's destination:** the host each model call, MCP request and tool call
-      went to.
-    - **Fail a test that goes around:** with the gateway named in `assay.toml`, a test whose code
-      calls a model provider, an MCP server or a governed tool's API directly fails, naming the
-      call and the line that made it. A new code path that skips the gateway is caught in the pull
-      request, not found later in the bill.
-    - **Count it in production:** direct calls per agent, as a security flag, with the share of
-      model calls and tool calls that went through the gateway.
-    Assay sees only the calls its SDK records in the app's own process. Traffic from another
-    process or runtime needs egress rules at the network, and the report says so instead of
-    claiming full coverage.
+- **Agent security: identity, drift, and approvals in production:**
   - **Whose access an agent uses, and when it drifts:** agents often run on the credentials of
     the person who set them up, keep them across sessions, and have no identity or baseline of
     their own, so identity and security tools see nothing unusual. Assay sees what each run did,
