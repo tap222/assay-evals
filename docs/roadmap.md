@@ -369,6 +369,13 @@ phase are marked there too.
   assertions with exact changed lines. `assay guard` lists them for human confirmation and halts unsafe merges
   until marked intended. `assay changes --intended-stats` tracks which flags get marked intended and flags
   kinds with high ignore rates before the rest stop being read.
+- **Errors a test logged and still passed:** errors and warnings logged during each test (Python `logging`
+  and `warnings`, `console.error` and `console.warn`) are captured and parameterized into templates with IDs,
+  numbers, and PII removed ("user 1234 not found" and "user 5678 not found" are one template). Compared with
+  the base branch, templates no test logged before are listed with the tests that logged them and the changed
+  function they came from; familiar errors occurring significantly more often (>= 3x) count as regressions.
+  Templates logged at the same rate on the base branch are left out to keep suites quiet. `expect(run).no_logged_errors()`
+  guards tests in the suite.
 
 ## Not planned
 
@@ -388,18 +395,6 @@ phase are marked there too.
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send
   them to `POST /v1/ingest` directly, or use OpenTelemetry.
-- **Errors a test logged and still passed:** an exception caught and logged, a fallback taken, a
-  warning about a missing field. The test passes, and the log line that says something broke goes
-  unread. Assay records what each test called and wrote, not what it logged. It should record the
-  errors and warnings logged during each test (Python `logging` and `warnings`, `console.error` and
-  `console.warn`), turned into templates so "user 1234 not found" and "user 5678 not found" are one,
-  with ids, numbers and personal data taken out. Compared with the base branch:
-  - **A template no test logged before** is listed with the tests that logged it and the changed
-    function it came from.
-  - **A familiar one, many times more often:** an error that was there before and now shows up in
-    many more tests counts too, since a new error and a rise in an old one are both regressions.
-  Templates logged on the base branch as well, at the same rate, are left out, so a noisy suite
-  isn't the report.
 - **Tests that reached something real:** tests fake tools one at a time, and the one nobody faked
   runs for real. A coding agent's test copies files to the real backup server with `scp`, because
   only `ssh` was faked, or a run of the new tests against the old code (to show they fail) calls

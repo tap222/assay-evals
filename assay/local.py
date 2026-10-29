@@ -2924,6 +2924,14 @@ def finish(root: Path, cfg: dict, run_id: str, repeat: int, codes: List[int], ba
     if checks:
         text += "\n" + _paint("\n".join([f"New writes to check ({len(checks)}):",
                                           *(f"  {x}" for x in diff.write_checks_lines(checks, _short))]), "yellow")
+    from assay.logged_errors import compare_logged_errors, logged_errors_by_case
+    now_logs = logged_errors_by_case(engine, TENANT, run_id)
+    base_logs = logged_errors_by_case(engine, TENANT, baseline) if baseline else {}
+    log_regressions = compare_logged_errors(now_logs, base_logs)
+    result["logged_errors"] = log_regressions
+    if log_regressions:
+        text += "\n" + _paint("\n".join([f"Logged error regressions ({len(log_regressions)}):",
+                                          *(f"  {x['text']}" for x in log_regressions)]), "yellow")
     if baseline:  # what each case did, next to what its baseline did
         before, now = flows_before, flows_now
         result["flows"] = {c: (before[c]["flow"], now[c]["flow"]) for c in before.keys() & now.keys()

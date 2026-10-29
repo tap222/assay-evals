@@ -314,6 +314,7 @@ class Run:
         self.duplicate: bool = False  # True if this run is a duplicate delivery of a request
         self.original_run_id: Optional[str] = None
         self.task: Optional[str] = None
+        self.logged_errors: List[Dict[str, Any]] = []
 
     def _case(self) -> Dict[str, Any]:
         if not self.test:
@@ -448,6 +449,29 @@ class Run:
         self._step("mcp_prompt", name=name, args=self._c.clean(args or {}), result=self._c.clean(messages),
                    server=server, status="error" if error else "ok", error=error)
 
+    def log(self, level: str, message: str, logger: Optional[str] = None, file: Optional[str] = None,
+            line: Optional[int] = None, function: Optional[str] = None,
+            started: Optional[datetime] = None) -> None:
+        """Record an error or warning logged during this run. Turned into a canonical template
+        (with IDs, numbers, and PII stripped) to detect regressions across test runs."""
+        from assay_sdk.logged_errors import template_log
+        tmpl = template_log(message)
+        lvl = str(level).upper()
+        entry = {
+            "level": lvl,
+            "message": message,
+            "template": tmpl,
+            "logger": logger or "",
+            "file": file,
+            "line": line,
+            "function": function,
+        }
+        self.logged_errors.append(entry)
+        self._step("log", started, name=logger or lvl, level=lvl,
+                   message=self._c.clean(message), template=tmpl, logger=logger or "",
+                   file=file, line=line, function=function,
+                   error=tmpl, text=self._c.clean(message))
+
     def call(self, name: str, fn: Callable, *positional, server: Optional[str] = None, **args):
         """Call fn(*positional, **args), record it as a tool call (result or error, and timing), and
         return its result. Exceptions are recorded, then re-raised."""
@@ -554,9 +578,11 @@ def run(task: Optional[str] = None, *, run_id: Optional[str] = None, kind: str =
                 "turn": turn, "user": None if user is None else str(user)[:128],
                 "duplicate": bool(duplicate) if duplicate is not None else None,
                 "original_run_id": original_run_id})
+    from assay_sdk.logged_errors import capture_logs
     status, error = "completed", None
     try:
-        yield r
+        with capture_logs(r):
+            yield r
     except GeneratorExit:
         # Not from inside a `with` block: the run was dropped without being exited, so how it ended
         # is unknown. Leave it open; the server marks it abandoned once it goes quiet.

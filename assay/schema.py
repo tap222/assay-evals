@@ -79,12 +79,20 @@ class Step(_E):
     run_id: str = Field(..., max_length=128)
     seq: int = Field(..., ge=0)
     kind: Literal["llm", "tool", "state", "answer", "stage", "approval", "resource", "mcp_prompt", "plan",
-                  "retrieval", "user"]
+                  "retrieval", "user", "log"]
     name: Optional[str] = Field(None, max_length=128)
     parent_seq: Optional[int] = Field(None, ge=0)
     ended_at: Optional[datetime] = None
     status: Literal["ok", "error"] = "ok"
     error: Optional[str] = Field(None, max_length=2048)
+    # log
+    level: Optional[str] = Field(None, max_length=16)
+    message: Optional[str] = Field(None, max_length=4096)
+    template: Optional[str] = Field(None, max_length=4096)
+    logger: Optional[str] = Field(None, max_length=256)
+    file: Optional[str] = Field(None, max_length=512)
+    line: Optional[int] = Field(None, ge=0)
+    function: Optional[str] = Field(None, max_length=256)
     # llm
     model: Optional[str] = Field(None, max_length=128)
     tokens_in: Optional[int] = Field(None, ge=0)
@@ -401,7 +409,8 @@ def ingest(engine: Engine, events: List[BaseModel], tenant: str) -> Dict[str, in
                         "tenant": tenant, "trajectory_id": e.run_id, "seq": e.seq,
                         "kind": "reason" if e.kind == "llm" else e.kind,
                         "name": e.name or (e.uri[:128] if e.kind == "resource" else None),
-                        "args": {"op": e.op or "update"} if e.kind == "state" else
+                        "args": {"level": e.level, "template": e.template, "file": e.file, "line": e.line, "function": e.function} if e.kind == "log" else
+                        {"op": e.op or "update"} if e.kind == "state" else
                         {"decision": e.decision, "by": e.by} if e.kind == "approval" else
                         {"uri": e.uri} if e.kind == "resource" else
                         {"steps": e.plan} if e.kind == "plan" else
@@ -410,8 +419,9 @@ def ingest(engine: Engine, events: List[BaseModel], tenant: str) -> Dict[str, in
                         "finish_reason": e.finish_reason, "tool_calls": e.tool_calls, "tokens_cached": e.tokens_cached,
                         "tokens_reasoning": e.tokens_reasoning, "context": e.context, "media": e.media,
                         "settings": e.settings, "tool_schemas": e.tool_schemas, "fault": e.fault,
-                        "result": e.value if e.kind == "state" else e.fragments if e.kind == "retrieval" else e.result,
-                        "error": e.error if e.status == "error" else None, "text": e.text, "model": e.model,
+                        "result": {"template": e.template} if e.kind == "log" else (e.value if e.kind == "state" else e.fragments if e.kind == "retrieval" else e.result),
+                        "error": (e.template or e.message) if e.kind == "log" else (e.error if e.status == "error" else None),
+                        "text": e.message if e.kind == "log" else e.text, "model": e.model,
                         "tokens": tokens or None, "cost_usd": e.cost_usd, "started_at": e.ts,
                         "finished_at": e.ended_at, "parent_seq": e.parent_seq})
             elif isinstance(e, RunEnd):

@@ -544,10 +544,11 @@ def _item(x: dict) -> str:
 # list: what broke first, then what looks wrong, then what nothing checked. The verdict says
 # whether to merge; the first three items say what to look at; the rest is one line of counts.
 
-ORDER = ["regressed", "weakened", "runner_config", "new write", "untested, risky", "deploy", "changed", "untested", "expected value"]
-STOPS = {"regressed", "weakened", "runner_config"}  # what makes the verdict "not safe to merge"
+ORDER = ["regressed", "weakened", "runner_config", "logged_error", "new write", "untested, risky", "deploy", "changed", "untested", "expected value"]
+STOPS = {"regressed", "weakened", "runner_config", "logged_error"}  # what makes the verdict "not safe to merge"
 NOUN = {"regressed": ("regression", "regressions"), "weakened": ("weakened test", "weakened tests"),
         "runner_config": ("test runner configuration change", "test runner configuration changes"),
+        "logged_error": ("logged error regression", "logged error regressions"),
         "new write": ("new write to check", "new writes to check"),
         "untested, risky": ("untested change", "untested changes"), "untested": ("untested change", "untested changes"),
         "deploy": ("unchecked deploy change", "unchecked deploy changes"),
@@ -579,6 +580,9 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
         if f.get("kind") == "runner_config":
             add("runner_config", w.describe(f),
                 key=f"runner_config:{f['file']}:{f.get('lines_text', '')}")
+    for e in (run or {}).get("logged_errors") or []:
+        add("logged_error", e["text"], detail=e.get("detail", ""),
+            key=e.get("key") or f"logged_error:{e['template']}", case=e.get("cases", [None])[0] if e.get("cases") else None)
     for c in (run or {}).get("write_checks") or []:
         names = c.get("names") or c.get("cases") or []
         add("new write", c["text"], key=f"write:{c['kind']}:{c['write']}:{c['field']}")
@@ -622,7 +626,7 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
 # ---------- marking an item intended ----------
 
 INTENDED = "assay.intended.toml"
-CAN_INTEND = {"runner_config", "new write", "untested, risky", "untested", "deploy", "changed", "expected value"}
+CAN_INTEND = {"runner_config", "logged_error", "new write", "untested, risky", "untested", "deploy", "changed", "expected value"}
 
 KEY_TO_KIND = {
     "write": "new write",
@@ -631,6 +635,7 @@ KEY_TO_KIND = {
     "changed": "changed",
     "expected": "expected value",
     "runner_config": "runner_config",
+    "logged_error": "logged_error",
 }
 
 

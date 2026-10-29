@@ -167,7 +167,8 @@ name. `handles_failure()` then checks the answer said it couldn't find it, and
 to say so ("the documents don't say") rather than fill the gap. `.must_not_abstain()` is the other
 half, for a question they do answer. `expect(run).citations_valid()` checks that citations the answer
 gives match retrieved sources, pages, and claim support (a right claim with a wrong page fails as a
-wrong citation, not as a wrong answer). `assay test` counts them apart (see
+wrong citation, not as a wrong answer). `expect(run).no_logged_errors()` guards against tests logging
+errors or warnings and still passing silently. `assay test` counts them apart (see
 [faithfulness](../../docs/agents.md#faithfulness-is-the-answer-backed-by-what-was-retrieved)).
 
 `assay.claim_review(run_id, claim, verdict, evidence=..., correction=..., by=...)` records an

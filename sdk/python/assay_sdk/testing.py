@@ -486,6 +486,33 @@ class Expectations:
             return "give rule=, tool= or answer="
         return self._add(f"checkpoint({name})", check)
 
+    def no_logged_errors(self, min_level: str = "WARNING") -> "Expectations":
+        """Expect that no error or warning (at or above min_level) was logged during the run."""
+        levels = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "WARN": 30, "ERROR": 40, "CRITICAL": 50}
+        thresh = levels.get(min_level.upper(), 30)
+
+        def check():
+            logs = getattr(self.run, "logged_errors", [])
+            step_logs = [s for s in getattr(self.run, "steps", []) if s.get("kind") == "log"]
+            all_errors = []
+            for l in logs:
+                lvl = levels.get(str(l.get("level", "")).upper(), 30)
+                if lvl >= thresh:
+                    all_errors.append(l)
+            for s in step_logs:
+                lvl = levels.get(str(s.get("level", "")).upper(), 30)
+                if lvl >= thresh:
+                    tmpl = s.get("template") or s.get("error") or s.get("text")
+                    if not any(e.get("template") == tmpl for e in all_errors):
+                        all_errors.append({"template": tmpl, "level": s.get("level")})
+            if all_errors:
+                tmpls = ", ".join(f"“{e['template']}”" for e in all_errors[:3])
+                extra = f" and {len(all_errors) - 3} more" if len(all_errors) > 3 else ""
+                return f"logged {len(all_errors)} error(s) or warning(s) ({tmpls}{extra})"
+            return None
+
+        return self._add("no_logged_errors", check)
+
     def failures(self) -> List[str]:
         """Every expectation that doesn't hold, as "name: why"."""
         out = []

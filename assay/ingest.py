@@ -159,7 +159,7 @@ class EvalResultEvent(Event):
 
 
 class StepEvent(Event):
-    kind: str = Field(..., pattern="^(reason|tool|state|answer|resource|mcp_prompt|plan|retrieval|user)$",
+    kind: str = Field(..., pattern="^(reason|tool|state|answer|resource|mcp_prompt|plan|retrieval|user|log)$",
                       description="reason (model thinking or planning), tool (a call and its result), state "
                                   "(a change to the world), answer (the final reply), resource (an MCP resource "
                                   "read: args {\"uri\"}, result its contents), mcp_prompt (an MCP prompt fetched: "
