@@ -379,6 +379,26 @@ class Expectations:
             return f"{tool} went through {len(steps)} times{what} (steps {', '.join(map(str, steps))}); once expected."
         return self._add(f"at_most_once({tool}" + (f", key={key}" if key else "") + ")", rule)
 
+    def duplicate_safe(self, duplicate_run: Optional[Any] = None, *, key: Optional[str] = None) -> "Expectations":
+        """The run handles duplicate requests safely: the second delivery changes nothing (no repeated
+        charges, payments or writes), answers success to the sender (not HTTP 409 Conflict, which causes
+        retries to pile up), and is recorded as a duplicate."""
+        def rule():
+            from assay_sdk.duplicate import check_duplicate_safety, DuplicateResult
+            target = duplicate_run
+            orig = self.run
+            if isinstance(target, DuplicateResult):
+                return "; ".join(target.failures) if target.failures else None
+            if target is None:
+                if getattr(orig, "duplicate", False):
+                    target = orig
+                    orig = None
+                else:
+                    return "duplicate_safe needs the duplicate run: expect(first_run).duplicate_safe(duplicate_run)"
+            failures = check_duplicate_safety(orig or target, target, key=key)
+            return "; ".join(failures) if failures else None
+        return self._add("duplicate_safe()" if not key else f"duplicate_safe(key={key!r})", rule)
+
     def checkpoint(self, name: str, rule: Optional[Callable[[Any], bool]] = None, *, tool: Optional[str] = None,
                    args: Optional[dict] = None, result: str = "ok", answer: Optional[str] = None) -> "Expectations":
         """A goal checkpoint of a long workflow, passing or failing on its own: rule(run) -> bool, or a

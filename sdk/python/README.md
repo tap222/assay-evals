@@ -151,7 +151,10 @@ and `assay calibrate` fails a judge that read dev or test (see
 `assay.faults(get_supplier={"returns": [assay.REAL, {"status": "on_hold"}]})` changes what it
 returns between calls (a state that moves while the agent works). `faults(charge="lost")` lets
 the call go through and loses its reply, and `expect(run).at_most_once("charge", key="order_id")`
-fails a retry that charged twice;
+fails a retry that charged twice. `assay.duplicate(handle, req, run=...)` (and `await assay.aduplicate(...)`)
+simulates duplicate delivery (webhooks, double clicks) and `expect(run).duplicate_safe()` checks the
+second delivery changes nothing, still answers success (not HTTP 409 Conflict, which causes retries to
+pile up), and was recorded as a duplicate;
 `expect(run).handles_failure()`, `.no_false_success()`, `.well_formed_arguments()` and
 `.checkpoint(name, ...)` check what the agent did about it (see [agents](../../docs/agents.md)).
 `run.search("policies", index.search, question)` records a retrieval and returns what it found;

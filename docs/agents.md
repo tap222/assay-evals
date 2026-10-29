@@ -305,6 +305,25 @@ expected." A call counts when it ran: it succeeded, or `lost` dropped its reply.
 before it ran (`error`, `timeout`) doesn't. The same check fits a booking, an email or anything
 else that mustn't happen twice.
 
+**The same request sent twice (webhooks and double clicks).** A client that sends the whole request
+again (a double click, a webhook delivered twice) tests idempotency across runs. `duplicate()`
+sends the request a second time in a duplicate run context and checks that the second delivery changes
+nothing, still answers success to the sender (not an HTTP `409 Conflict`, which causes senders to retry
+repeatedly and retries to pile up), and is recorded as a duplicate:
+
+```python
+res = assay.duplicate(handle_payment_webhook, payload, run=assay_case, key="order_id")
+res.verify()
+```
+
+Or check explicitly with `expect(run).duplicate_safe(duplicate_run)`:
+
+```python
+expect(first_run).duplicate_safe(duplicate_run, key="order_id")
+```
+
+For async handlers, `await assay.aduplicate(handle_payment_webhook, payload, run=assay_case)` works the same way.
+
 **The world changing while the agent works.** An approval checked when the agent plans can be stale
 by the time it acts. `{"returns": [a, b, ...]}` gives a tool one value per call, the last one from
 then on, and `assay.REAL` in the list calls the tool for real. The invoice stays approved, and the

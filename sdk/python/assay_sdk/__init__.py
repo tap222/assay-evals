@@ -38,7 +38,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-__all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correction", "expect", "prompt", "flush", "shutdown", "Run"]
+__all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correction", "expect", "prompt", "flush", "shutdown", "Run", "duplicate", "aduplicate", "DuplicateResult"]
 __version__ = "0.5.0"
 
 log = logging.getLogger("assay_sdk")
@@ -311,6 +311,9 @@ class Run:
         self.expectations: List[Any] = []  # assay_sdk.testing.expect(run): checked when the test ends
         self.request: Any = None  # what the run was asked (input=): personal data it gave may be said back
         self.tool_schemas: Dict[str, dict] = {}  # the input schema of each tool a model was offered
+        self.duplicate: bool = False  # True if this run is a duplicate delivery of a request
+        self.original_run_id: Optional[str] = None
+        self.task: Optional[str] = None
 
     def _case(self) -> Dict[str, Any]:
         if not self.test:
@@ -511,13 +514,15 @@ class _Stage:
 def run(task: Optional[str] = None, *, run_id: Optional[str] = None, kind: str = "agent", input: Any = None,
         input_ref: Optional[str] = None, version: Optional[Dict[str, str]] = None, segment: Optional[str] = None,
         test: Any = None, parent: Optional[Run] = None, tags: Optional[Dict[str, Any]] = None,
-        conversation: Optional[str] = None, turn: Optional[int] = None, user: Optional[str] = None):
+        conversation: Optional[str] = None, turn: Optional[int] = None, user: Optional[str] = None,
+        duplicate: Optional[bool] = None, original_run_id: Optional[str] = None):
     """Record one run. kind is "agent" (llm/tool/state/answer steps) or "pipeline" (stages).
     conversation="c-1", turn=2: this run is one turn of a conversation (turns from 0).
     user: who asked, as a pseudonymous id (a hash, not an email), so the same person asking again
     in a new conversation is seen.
     test="case-17" (or {"run": "nightly-0924", "case": "case-17", "attempt": 0}) marks a test-case run;
     under `assay test`, the run and attempt are filled in.
+    duplicate=True: a duplicate delivery of a previous request (webhooks, double clicks).
     An exception inside the block ends the run as failed (and is re-raised)."""
     c = _c()
     rid = run_id or uuid.uuid4().hex
@@ -529,12 +534,17 @@ def run(task: Optional[str] = None, *, run_id: Optional[str] = None, kind: str =
     r = Run(c, rid, recorded)
     r.test = _test(test)
     r.request = input
+    r.task = task
+    r.duplicate = bool(duplicate) if duplicate is not None else False
+    r.original_run_id = original_run_id
     token = _current.set(r)  # assay.current(): what @assay.step, @assay.tool and assay.instrument() record into
     if recorded:
         c.emit({"type": "run.start", "run_id": rid, "kind": kind, "task": task, "segment": segment,
                 "input": c.clean(input), "input_ref": input_ref, "version": version, "test": r.test,
                 "parent_run_id": parent.id if parent else None, "tags": tags, "conversation_id": conversation,
-                "turn": turn, "user": None if user is None else str(user)[:128]})
+                "turn": turn, "user": None if user is None else str(user)[:128],
+                "duplicate": bool(duplicate) if duplicate is not None else None,
+                "original_run_id": original_run_id})
     status, error = "completed", None
     try:
         yield r
@@ -697,3 +707,5 @@ from assay_sdk.simulate import Persona, Simulation, load_personas, simulate  # n
 from assay_sdk.golden import golden_examples  # noqa: E402
 # Breaking tools on purpose, to test error handling (assay_sdk/faults.py).
 from assay_sdk.faults import REAL, ToolFault, faults  # noqa: E402
+# Simulating duplicate requests (webhooks, double clicks) to test idempotency (assay_sdk/duplicate.py).
+from assay_sdk.duplicate import DuplicateResult, aduplicate, duplicate  # noqa: E402

@@ -347,6 +347,12 @@ phase are marked there too.
   `handles_failure()` fails an answer that goes on as if a failed or empty search had found the
   evidence. `expect(run).must_retrieve(name, source=...)` fails a case that never searched where its
   evidence is.
+- **The same request sent twice (webhooks, double clicks):** `assay.duplicate(fn, request, run=...)`
+  (and `await assay.aduplicate(...)` for coroutines) simulates client double clicks and webhook
+  redeliveries. `expect(run).duplicate_safe()` verifies the second delivery changed nothing (no
+  repeated side-effecting tool calls, charges, or writes), answered success to the sender (not an
+  HTTP `409 Conflict`, which causes the sender to retry repeatedly and retries to pile up), and was
+  recorded as a duplicate with its original run id.
 
 ## Not planned
 
@@ -737,11 +743,6 @@ phase are marked there too.
   the settlement receipt. It uses a mocked facilitator or test payments, never real money by
   default. Price, status, schema and settlement then show in the case-level diff like any other
   change, and `at_most_once` already catches a payment repeated after a lost reply.
-- **The same request sent twice:** `faults(tool="lost")` and `expect(run).at_most_once()` catch an
-  agent that pays again after a lost reply. A client that sends the whole request again (a
-  double click, a webhook delivered twice) isn't simulated yet. A case should send it again and
-  expect the second delivery to change nothing, still answer success to the sender (a `409` makes
-  the sender retry, and the retries pile up), and be recorded as a duplicate.
 - **Done, proven from outside the agent:** browser and tool agents report success because the
   page changed, while the form was silently rejected or the session had expired. A success check
   today (`success=` in `simulate()`, or `run.state_of()`) reads what the run recorded, which is the

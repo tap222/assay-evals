@@ -70,6 +70,8 @@ class RunStart(_E):
     turn: Optional[int] = Field(None, ge=0, description="This run's place in the conversation, from 0")
     user: Optional[str] = Field(None, max_length=128, description="Who asked, as a pseudonymous id: the same "
                                 "person asking again in a new conversation is a sign the first answer didn't do")
+    duplicate: Optional[bool] = Field(None, description="True if this request was delivered again as a duplicate (double click, retried webhook)")
+    original_run_id: Optional[str] = Field(None, max_length=128, description="The original run_id if this run was delivered as a duplicate")
 
 
 class Step(_E):

@@ -56,7 +56,8 @@ CHECK_NAMES = {"plan_quality": "Plan quality", "consistency": "Consistency", "co
                "claimed_success": "Claimed success", "context_retention": "Context retention",
                "rewording": "Same behavior reworded", "document": "All fields correct",
                "expect.must_abstain()": "Says the sources don't answer",
-               "expect.must_not_abstain()": "Answers when the sources do"}
+               "expect.must_not_abstain()": "Answers when the sources do",
+               "expect.duplicate_safe()": "Duplicate request handled"}
 PII_EVALUATOR = "assay.pii@1"
 
 CLAUDE_SKILL = ".claude/skills/assay/SKILL.md"
