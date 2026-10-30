@@ -413,6 +413,23 @@ phase are marked there too.
   a handoff (`expect(run).valid_handoffs()`), and no uncompensated actions left standing (`expect(run).no_orphaned_effects()`).
   When a run fails, pinpoints the first broken transition and its downstream cascade effects
   (`find_first_broken_transition()`) and reports it in `assay changes`.
+- **Agent security: identity, drift, and approvals in production:** identity tracking, baseline drift alerts,
+  permission auditing, and action audits with rubber-stamp detection:
+  - **Identity tracking:** records agent identity (`agent_id`), owner, caller (`requested_by`), and credentials
+    behind each action. Flags unowned runs (`missing_owner`) and cross-user credential usage (acting with a person's
+    delegated credential on someone else's request: `expect(run).has_valid_identity()`, `expect(run).no_cross_user_credentials()`).
+    Computes fleet metrics: share of actions with known owner and agent identity (`compute_identity_metrics()`).
+  - **Runtime drift against history:** learns operational boundaries from past runs (`AgentBaseline.from_runs()`)
+    and alerts immediately on new hosts, new tables, read-to-write operations (attempting writes where history only read),
+    cross-tenant access, and single-run volume drainage anomalies (`expect(run).within_baseline(baseline)`).
+  - **Access held but unused:** audits granted tools and scopes against the last 30 days of activity (`audit_access_held()`),
+    identifies over-permissioned tools, flags inactive agents holding access and orphaned agents whose owner no longer signs in,
+    and produces a trimmed least-privilege policy (`recommended_permissions`).
+  - **Action audits & rubber-stamp detection:** answers "what did this agent do, and who approved it?" across runs
+    (`query_action_audit()`) with approver, review time, evidence, and outcome; exports as RFC 4180 CSV and HMAC-SHA256
+    tamper-proof signed packages (`export_signed_audit()`). Detects rubber-stamp approvals decided faster than human
+    comprehension threshold (`no_rubber_stamp_approvals()`), rejects self-claimed agent approvals, enforces expiration
+    windows, and binds approvals to arguments via canonical SHA-256 argument hashes (`strictly_approved()`).
 
 ## Not planned
 
@@ -430,47 +447,6 @@ phase are marked there too.
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send
   them to `POST /v1/ingest` directly, or use OpenTelemetry.
-- **Agent security: identity, drift, and approvals in production:**
-  - **Whose access an agent uses, and when it drifts:** agents often run on the credentials of
-    the person who set them up, keep them across sessions, and have no identity or baseline of
-    their own, so identity and security tools see nothing unusual. Assay sees what each run did,
-    but not whose access it used. It should:
-    - **Record the identity behind each action:** the agent, its owner, the person or system that
-      asked, and the credential each tool call and HTTP request used. A run that acts with a
-      person's credentials on someone else's request, or with no owner on record, is flagged.
-    - **Keep a baseline per agent:** the tools, hosts, tables and kinds of records it normally
-      reaches, learned from its runs. The first time it reaches something new (a new host,
-      another customer's records, a write where it only read), that's an alert at once, not after
-      a rate moves. Volume counts too: an agent allowed to read the CRM that reads a thousand
-      customers for a one-customer task is draining it one permitted query at a time. Drift is measured against the agent's own history, so no rules come first.
-    - **Access held but not used:** the tools and scopes an agent is given against the ones it used
-      in the last 30 days, so access can be trimmed to what it does. An agent with no runs for a
-      while that still holds access, or whose owner no longer signs in to Assay, is listed for
-      review.
-    The number for a team: the share of agent actions with a known owner and an identity of their
-    own, and how many agents hold access they didn't use.
-  - **"What did this agent do, and who approved it?" in a minute:** each run is recorded, but
-    finding every action of one kind means opening runs one by one. Assay's own audit log covers
-    the people using Assay, not what agents did. It should answer by action: every refund over $100
-    this month, with the agent, who asked, who approved and how fast, the rule or contract that
-    allowed it, the evidence it rested on, and what happened after. The same view exports for
-    security, legal or finance as CSV and PDF, signed so an edit shows. The number for a team:
-    the time to answer that question, and the share of actions with a full record.
-  - **An approval the agent claimed, not one it was given:** `must_get_approval_before` accepts any
-    approval recorded in the run, whoever recorded it. An agent that writes its own approval, or
-    passes "trusted" or "approved_by: finance" in a tool's arguments, gets through. An approval
-    should record where it came from (the approval system, a person's decision, a signed record),
-    and only those count. A claim in the agent's own output or arguments never does, and probe cases
-    check it: an invoice that says "pre-approved" in its text must not get paid. An approval used
-    long after it was given, past the window the case allows, counts as none.
-  - **Approvals that are rubber stamps:** people approve almost everything an agent asks, so an
-    approval step can look safe while checking nothing. `run.approval()` records the action, the
-    decision and who, but not what the person was shown or how long they took. It should record
-    both (the arguments on screen, asked and decided times) and report, per approver and per
-    action: the approval rate, the median seconds to decide, risky actions approved in seconds,
-    an approval that doesn't match what then ran (approved a $40 refund, $400 went out), and
-    approved runs that broke a security rule anyway. In tests, a case where the person says no
-    checks the agent stops. The number for a team: the share of approvals that were real reviews.
 - **Voice and phone agents: the call, not just the booking:** most phone agents book the slot
   when the caller plays along. They differ on what happens around it: hold, silence, being
   interrupted, a caller who changes an answer. Simulated users (`simulate()`) test a conversation,

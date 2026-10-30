@@ -40,7 +40,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 __all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correction", "expect", "prompt", "flush", "shutdown", "Run", "duplicate", "aduplicate", "DuplicateResult", "check_citations", "extract_citations", "Citation",
            "Scope", "ScopeViolation", "PathWithin", "scope", "probe", "ProbeResult", "PolicyGate", "GateDecision", "PolicyGateReport", "evaluate_policy_gate", "scan_security_flags", "SecurityFlag", "check_gateway_bypass", "profile_agent_reach", "compare_agent_reach", "check_markdown_exfiltration", "check_untrusted_taint", "check_fails_closed",
-           "Scenario", "HandoffContract", "ScenarioResult", "BrokenTransition", "crash_at", "ProcessCrash", "validate_handoffs", "check_compensations", "find_first_broken_transition"]
+           "Scenario", "HandoffContract", "ScenarioResult", "BrokenTransition", "crash_at", "ProcessCrash", "validate_handoffs", "check_compensations", "find_first_broken_transition",
+           "AgentIdentity", "IdentityViolation", "DriftAlert", "AgentBaseline", "AccessAuditReport", "ActionAuditRecord",
+           "check_identity_violations", "compute_identity_metrics", "learn_agent_baseline", "detect_runtime_drift",
+           "audit_access_held", "audit_all_agents_access", "query_action_audit", "export_audit_csv",
+           "export_signed_audit", "verify_signed_audit", "detect_rubber_stamp_approvals", "hash_arguments",
+           "verify_approval_for_action", "check_self_claimed_approvals"]
 __version__ = "0.5.0"
 
 log = logging.getLogger("assay_sdk")
@@ -323,6 +328,12 @@ class Run:
         self.task: Optional[str] = None
         self.logged_errors: List[Dict[str, Any]] = []
         self.scope_violations: List[Any] = []
+        self.agent_id: Optional[str] = None
+        self.owner: Optional[str] = None
+        self.requested_by: Optional[str] = None
+        self.credential: Optional[str] = None
+        self.credential_type: Optional[str] = None
+        self.credential_owner: Optional[str] = None
 
     def _case(self) -> Dict[str, Any]:
         if not self.test:
@@ -381,13 +392,24 @@ class Run:
                    context=context, media=media, settings=settings)
 
     def approval(self, action: str, decision: str = "approved", by: Optional[str] = None,
-                 reason: Optional[str] = None, server: Optional[str] = None) -> None:
+                 reason: Optional[str] = None, server: Optional[str] = None,
+                 source: Optional[str] = None, arg_hash: Optional[str] = None,
+                 args: Optional[Dict[str, Any]] = None, time_to_approve_ms: Optional[float] = None,
+                 evidence: Optional[str] = None, rule: Optional[str] = None,
+                 started: Optional[datetime] = None) -> None:
         """A decision to allow an action, e.g. approval("refund", "approved", by="manager"). decision:
         approved, rejected or pending. Supports server.action syntax or server=.
         Contracts (requires_approval) and expect(run) check it."""
         if "." in action and server is None:
             server, action = action.split(".", 1)
-        self._step("approval", name=action, decision=decision, by=by, text=self._c.clean(reason), server=server)
+        from assay_sdk.llm import normalize_args
+        cleaned_args = self._c.clean(normalize_args(args)) if args is not None else None
+        if arg_hash is None and cleaned_args is not None:
+            from assay_sdk.production_security import hash_arguments
+            arg_hash = hash_arguments(cleaned_args)
+        self._step("approval", started, name=action, decision=decision, by=by, text=self._c.clean(reason),
+                   server=server, source=source, arg_hash=arg_hash, args=cleaned_args,
+                   time_to_approve_ms=time_to_approve_ms, evidence=evidence, rule=rule)
 
     def outcome(self, value: str) -> None:
         """Whether the run did what was asked: resolved, unresolved, or escalated (handed to a person)."""
@@ -395,7 +417,8 @@ class Run:
 
     def tool(self, name: str, args: Optional[Dict[str, Any]] = None, result: Any = None, error: Optional[str] = None,
              started: Optional[datetime] = None, ended: Optional[datetime] = None, server: Optional[str] = None,
-             fault: Optional[str] = None) -> None:
+             fault: Optional[str] = None, credential: Optional[str] = None, credential_type: Optional[str] = None,
+             credential_owner: Optional[str] = None, requested_by: Optional[str] = None) -> None:
         """A tool call you've already made. server: the MCP server it went to, if any. fault: the fault
         assay.faults() injected in its place (empty, error, timeout, return)."""
         if "." in name and server is None and not name.startswith(("HTTP ", "SOCKET ", "CMD ", "FILE ")):
@@ -408,8 +431,13 @@ class Run:
             v = sc.check_call(name, cleaned_args, seq=len(self.steps))
             if v:
                 self.scope_violations.extend(v)
+        cred = credential if credential is not None else getattr(self, "credential", None)
+        cred_type = credential_type if credential_type is not None else getattr(self, "credential_type", None)
+        cred_owner = credential_owner if credential_owner is not None else getattr(self, "credential_owner", None)
+        req_by = requested_by if requested_by is not None else getattr(self, "requested_by", None)
         self._step("tool", started, name=name, args=cleaned_args, result=self._c.clean(result),
-                   ended_at=_ts(ended), status="error" if error else "ok", error=error, server=server, fault=fault)
+                   ended_at=_ts(ended), status="error" if error else "ok", error=error, server=server, fault=fault,
+                   credential=cred, credential_type=cred_type, credential_owner=cred_owner, requested_by=req_by)
 
     def gate(self, tool: str, decision: str, reason: str, policy_version: str = "v1",
              args: Optional[Dict[str, Any]] = None) -> None:
@@ -579,7 +607,10 @@ def run(task: Optional[str] = None, *, run_id: Optional[str] = None, kind: str =
         input_ref: Optional[str] = None, version: Optional[Dict[str, str]] = None, segment: Optional[str] = None,
         test: Any = None, parent: Optional[Run] = None, tags: Optional[Dict[str, Any]] = None,
         conversation: Optional[str] = None, turn: Optional[int] = None, user: Optional[str] = None,
-        duplicate: Optional[bool] = None, original_run_id: Optional[str] = None):
+        duplicate: Optional[bool] = None, original_run_id: Optional[str] = None,
+        agent_id: Optional[str] = None, owner: Optional[str] = None, requested_by: Optional[str] = None,
+        credential: Optional[str] = None, credential_type: Optional[str] = None,
+        credential_owner: Optional[str] = None):
     """Record one run. kind is "agent" (llm/tool/state/answer steps) or "pipeline" (stages).
     conversation="c-1", turn=2: this run is one turn of a conversation (turns from 0).
     user: who asked, as a pseudonymous id (a hash, not an email), so the same person asking again
@@ -587,6 +618,7 @@ def run(task: Optional[str] = None, *, run_id: Optional[str] = None, kind: str =
     test="case-17" (or {"run": "nightly-0924", "case": "case-17", "attempt": 0}) marks a test-case run;
     under `assay test`, the run and attempt are filled in.
     duplicate=True: a duplicate delivery of a previous request (webhooks, double clicks).
+    agent_id, owner, requested_by, credential: identity and credential tracking for production security.
     An exception inside the block ends the run as failed (and is re-raised)."""
     c = _c()
     rid = run_id or uuid.uuid4().hex
@@ -601,6 +633,12 @@ def run(task: Optional[str] = None, *, run_id: Optional[str] = None, kind: str =
     r.task = task
     r.duplicate = bool(duplicate) if duplicate is not None else False
     r.original_run_id = original_run_id
+    r.agent_id = agent_id or task
+    r.owner = owner
+    r.requested_by = requested_by or user
+    r.credential = credential
+    r.credential_type = credential_type
+    r.credential_owner = credential_owner
     token = _current.set(r)  # assay.current(): what @assay.step, @assay.tool and assay.instrument() record into
     if recorded:
         c.emit({"type": "run.start", "run_id": rid, "kind": kind, "task": task, "segment": segment,
@@ -608,7 +646,10 @@ def run(task: Optional[str] = None, *, run_id: Optional[str] = None, kind: str =
                 "parent_run_id": parent.id if parent else None, "tags": tags, "conversation_id": conversation,
                 "turn": turn, "user": None if user is None else str(user)[:128],
                 "duplicate": bool(duplicate) if duplicate is not None else None,
-                "original_run_id": original_run_id})
+                "original_run_id": original_run_id,
+                "agent_id": r.agent_id, "owner": owner, "requested_by": r.requested_by,
+                "credential": credential, "credential_type": credential_type,
+                "credential_owner": credential_owner})
     from assay_sdk.logged_errors import capture_logs
     status, error = "completed", None
     try:
@@ -811,4 +852,27 @@ from assay_sdk.scenarios import (  # noqa: E402
     crash_at,
     find_first_broken_transition,
     validate_handoffs,
+)
+# Agent production security: identity, drift, access, and action audits (assay_sdk/production_security.py).
+from assay_sdk.production_security import (  # noqa: E402
+    AccessAuditReport,
+    ActionAuditRecord,
+    AgentBaseline,
+    AgentIdentity,
+    DriftAlert,
+    IdentityViolation,
+    audit_access_held,
+    audit_all_agents_access,
+    check_identity_violations,
+    check_self_claimed_approvals,
+    compute_identity_metrics,
+    detect_rubber_stamp_approvals,
+    detect_runtime_drift,
+    export_audit_csv,
+    export_signed_audit,
+    hash_arguments,
+    learn_agent_baseline,
+    query_action_audit,
+    verify_approval_for_action,
+    verify_signed_audit,
 )

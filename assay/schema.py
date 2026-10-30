@@ -72,6 +72,12 @@ class RunStart(_E):
                                 "person asking again in a new conversation is a sign the first answer didn't do")
     duplicate: Optional[bool] = Field(None, description="True if this request was delivered again as a duplicate (double click, retried webhook)")
     original_run_id: Optional[str] = Field(None, max_length=128, description="The original run_id if this run was delivered as a duplicate")
+    agent_id: Optional[str] = Field(None, max_length=128, description="The identity of the agent performing this run")
+    owner: Optional[str] = Field(None, max_length=128, description="The team or user owning/responsible for this agent")
+    requested_by: Optional[str] = Field(None, max_length=128, description="The person or system who initiated this request")
+    credential: Optional[str] = Field(None, max_length=128, description="The credential used for this run")
+    credential_type: Optional[str] = Field(None, max_length=64, description="Type of credential (user_oauth, service_account, api_key)")
+    credential_owner: Optional[str] = Field(None, max_length=128, description="The person whose credential is being delegated/used")
 
 
 class Step(_E):
@@ -142,6 +148,16 @@ class Step(_E):
     # approval: name is the action, e.g. refund; text is the reason
     decision: Optional[Literal["approved", "rejected", "pending"]] = None
     by: Optional[str] = Field(None, max_length=128, description="approval: who decided (a person, a policy)")
+    source: Optional[str] = Field(None, max_length=64, description="approval: origin of approval (e.g. human, approval_system)")
+    arg_hash: Optional[str] = Field(None, max_length=64, description="approval: bound hash of arguments")
+    time_to_approve_ms: Optional[float] = Field(None, ge=0, description="approval: time taken to approve in ms")
+    rule: Optional[str] = Field(None, max_length=256, description="approval: policy rule or contract permitting action")
+    evidence: Optional[str] = Field(None, max_length=4096, description="approval: evidence or context supporting approval")
+    # identity & credentials
+    credential: Optional[str] = Field(None, max_length=128, description="The credential used for this step")
+    credential_type: Optional[str] = Field(None, max_length=64, description="Type of credential (user_oauth, service_account, api_key)")
+    credential_owner: Optional[str] = Field(None, max_length=128, description="The person whose credential is being used")
+    requested_by: Optional[str] = Field(None, max_length=128, description="The person or system who initiated this request")
 
     @field_validator("args", mode="before")
     @classmethod

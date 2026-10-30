@@ -390,6 +390,50 @@ expect(run).no_orphaned_effects(compensations={"charge": "refund"})
 expect(run).scenario_passed(scenario)
 ```
 
+### Agent security in production: identity, drift, and approvals
+
+```python
+from assay_sdk import (
+    AgentBaseline,
+    audit_access_held,
+    detect_runtime_drift,
+    export_audit_csv,
+    export_signed_audit,
+    query_action_audit,
+    verify_signed_audit,
+)
+
+# 1. Identity & credential tracking
+with assay.run("task", agent_id="support_bot", owner="team-billing@corp.com",
+               requested_by="customer_101", credential="sa_billing",
+               credential_type="service_account") as run:
+    run.tool("read_order", {"order_id": "O-1"})
+    run.approval("refund", "approved", by="finance_lead", args={"amount": 50}, source="human")
+    run.tool("refund", {"amount": 50})
+
+expect(run).has_valid_identity()
+expect(run).no_cross_user_credentials()
+
+# 2. Runtime drift against history (new hosts, new tables, read-to-write operations, volume anomalies)
+baseline = AgentBaseline.from_runs(past_runs, agent_id="support_bot")
+expect(run).within_baseline(baseline)
+
+# 3. Access held but unused (trim over-permissioned tools inactive for 30+ days)
+report = audit_access_held({"agent_id": "support_bot", "owner": "alice@corp.com",
+                            "tools": ["read_order", "refund", "delete_database"]},
+                           runs=past_month_runs, inactive_days=30)
+# report.recommended_permissions contains only actively used tools
+
+# 4. Action audits, rubber-stamp detection, and argument-hash binding
+expect(run).no_rubber_stamp_approvals(min_review_seconds=1.0)
+expect(run).strictly_approved("refund")  # verifies source, freshness, and arg-hash binding
+
+records = query_action_audit(past_month_runs, action="refund", min_amount=100.0)
+csv_export = export_audit_csv(records)
+signed_audit = export_signed_audit(records, secret_key="finance_audit_key")
+assert verify_signed_audit(signed_audit, secret_key="finance_audit_key")
+```
+
 Each model call also records what its input was made of: the system prompt, tool definitions,
 history and user message in tokens, images and video (count, bytes, size), and settings
 (temperature, max tokens, reasoning effort). `assay.instrument()` reads them from the request;

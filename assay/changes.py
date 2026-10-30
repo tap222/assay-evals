@@ -544,9 +544,12 @@ def _item(x: dict) -> str:
 # list: what broke first, then what looks wrong, then what nothing checked. The verdict says
 # whether to merge; the first three items say what to look at; the rest is one line of counts.
 
-ORDER = ["security_violation", "broken_transition", "regressed", "weakened", "runner_config", "logged_error", "touched_real", "widened_reach", "new write", "untested, risky", "deploy", "changed", "untested", "expected value"]
-STOPS = {"security_violation", "broken_transition", "regressed", "weakened", "runner_config", "logged_error", "touched_real"}  # what makes the verdict "not safe to merge"
+ORDER = ["security_violation", "identity_violation", "drift_alert", "broken_transition", "regressed", "weakened", "runner_config", "logged_error", "touched_real", "widened_reach", "unused_access", "new write", "untested, risky", "deploy", "changed", "untested", "expected value"]
+STOPS = {"security_violation", "identity_violation", "drift_alert", "broken_transition", "regressed", "weakened", "runner_config", "logged_error", "touched_real"}  # what makes the verdict "not safe to merge"
 NOUN = {"security_violation": ("security violation", "security violations"),
+        "identity_violation": ("identity violation", "identity violations"),
+        "drift_alert": ("runtime drift alert", "runtime drift alerts"),
+        "unused_access": ("unused access alert", "unused access alerts"),
         "broken_transition": ("broken transition", "broken transitions"),
         "regressed": ("regression", "regressions"), "weakened": ("weakened test", "weakened tests"),
         "runner_config": ("test runner configuration change", "test runner configuration changes"),
@@ -588,6 +591,14 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
         add("security_violation", s["text"], detail=s.get("detail", ""),
             key=s.get("key") or f"security:{s['text']}",
             case=s.get("cases", [None])[0] if s.get("cases") else None)
+    for iv in (run or {}).get("identity_violations") or []:
+        add("identity_violation", iv["text"], detail=iv.get("detail", ""),
+            key=iv.get("key") or f"identity:{iv['text']}",
+            case=iv.get("cases", [None])[0] if iv.get("cases") else None)
+    for da in (run or {}).get("drift_alerts") or []:
+        add("drift_alert", da["text"], detail=da.get("detail", ""),
+            key=da.get("key") or f"drift:{da['text']}",
+            case=da.get("cases", [None])[0] if da.get("cases") else None)
     for bt in (run or {}).get("broken_transitions") or []:
         add("broken_transition", bt["text"], detail=bt.get("detail", ""),
             key=bt.get("key") or f"transition:{bt['text']}",
@@ -596,6 +607,10 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
         add("widened_reach", r["text"], detail=r.get("detail", ""),
             key=r.get("key") or f"reach:{r['text']}",
             case=r.get("cases", [None])[0] if r.get("cases") else None)
+    for ua in (run or {}).get("unused_access") or []:
+        add("unused_access", ua["text"], detail=ua.get("detail", ""),
+            key=ua.get("key") or f"access:{ua['text']}",
+            case=ua.get("cases", [None])[0] if ua.get("cases") else None)
     for e in (run or {}).get("logged_errors") or []:
         add("logged_error", e["text"], detail=e.get("detail", ""),
             key=e.get("key") or f"logged_error:{e['template']}", case=e.get("cases", [None])[0] if e.get("cases") else None)
