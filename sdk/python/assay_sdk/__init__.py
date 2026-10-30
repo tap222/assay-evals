@@ -48,7 +48,8 @@ __all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correc
            "verify_approval_for_action", "check_self_claimed_approvals",
            "CallerMove", "VoicePersona", "VoiceCallRecord", "VoiceTurn", "VoiceCallMetrics", "parse_call_record",
            "compute_voice_call_metrics", "simulate_call", "resolve_relative_date", "check_read_back",
-           "check_booking_details", "check_spoken_leaks", "check_handoff_summary", "compare_voice_runs"]
+           "check_booking_details", "check_spoken_leaks", "check_handoff_summary", "compare_voice_runs",
+           "AgentHandoffContract", "AgentTreeNode", "validate_agent_handoffs", "build_agent_tree", "render_agent_tree", "diff_agent_trees"]
 __version__ = "0.5.0"
 
 log = logging.getLogger("assay_sdk")
@@ -422,7 +423,8 @@ class Run:
     def tool(self, name: str, args: Optional[Dict[str, Any]] = None, result: Any = None, error: Optional[str] = None,
              started: Optional[datetime] = None, ended: Optional[datetime] = None, server: Optional[str] = None,
              fault: Optional[str] = None, credential: Optional[str] = None, credential_type: Optional[str] = None,
-             credential_owner: Optional[str] = None, requested_by: Optional[str] = None) -> None:
+             credential_owner: Optional[str] = None, requested_by: Optional[str] = None,
+             agent: Optional[str] = None, agent_id: Optional[str] = None) -> None:
         """A tool call you've already made. server: the MCP server it went to, if any. fault: the fault
         assay.faults() injected in its place (empty, error, timeout, return)."""
         if "." in name and server is None and not name.startswith(("HTTP ", "SOCKET ", "CMD ", "FILE ")):
@@ -439,9 +441,13 @@ class Run:
         cred_type = credential_type if credential_type is not None else getattr(self, "credential_type", None)
         cred_owner = credential_owner if credential_owner is not None else getattr(self, "credential_owner", None)
         req_by = requested_by if requested_by is not None else getattr(self, "requested_by", None)
+        extra = {}
+        if agent or agent_id:
+            extra["agent"] = agent or agent_id
         self._step("tool", started, name=name, args=cleaned_args, result=self._c.clean(result),
                    ended_at=_ts(ended), status="error" if error else "ok", error=error, server=server, fault=fault,
-                   credential=cred, credential_type=cred_type, credential_owner=cred_owner, requested_by=req_by)
+                   credential=cred, credential_type=cred_type, credential_owner=cred_owner, requested_by=req_by,
+                   **extra)
 
     def gate(self, tool: str, decision: str, reason: str, policy_version: str = "v1",
              args: Optional[Dict[str, Any]] = None) -> None:
@@ -545,11 +551,20 @@ class Run:
         return out
 
     def handoff(self, to_agent: str, kind: str = "transfer", payload: Optional[Dict[str, Any]] = None,
-                from_agent: Optional[str] = None, owner: Optional[str] = None) -> None:
+                from_agent: Optional[str] = None, owner: Optional[str] = None,
+                accepted: Optional[bool] = None, allowed_tools: Optional[List[str]] = None,
+                allowed_approvals: Optional[List[str]] = None) -> None:
         """Record an agent handoff (take over task or request advice)."""
         self._step("stage", None, name=f"handoff:{to_agent}",
                    args={"from": from_agent or getattr(self, "agent_name", "agent"),
-                         "to": to_agent, "kind": kind, "payload": payload or {}, "owner": owner})
+                         "to": to_agent, "kind": kind, "payload": payload or {}, "owner": owner,
+                         "accepted": accepted, "allowed_tools": allowed_tools,
+                         "allowed_approvals": allowed_approvals})
+
+    def accept_handoff(self, from_agent: str, accepted: bool = True, reason: Optional[str] = None) -> None:
+        """Record acceptance (or refusal) of a task transfer by the receiving agent."""
+        self._step("stage", None, name=f"handoff_accept:{from_agent}",
+                   args={"from": from_agent, "accepted": accepted, "reason": reason})
 
     def state(self, obj: str, op: str = "update", value: Any = None) -> None:
         """A change to the world, e.g. state("order:17", "update", {"qty": 3}). op: create, update, delete."""
@@ -567,9 +582,10 @@ class Run:
         """What the user said next, in a conversation recorded as one run (assay_sdk.simulate does it)."""
         self._step("user", text=self._c.clean(text))
 
-    def answer(self, text: str) -> None:
+    def answer(self, text: str, agent: Optional[str] = None) -> None:
         self.answer_text = text
-        self._step("answer", text=self._c.clean(text))
+        extra = {"agent": agent} if agent else {}
+        self._step("answer", text=self._c.clean(text), **extra)
 
     def call_record(self, data: Dict[str, Any], platform: Optional[str] = None) -> None:
         """Attach a voice platform call record (Retell, Vapi, or generic telephony) to this run."""
@@ -905,4 +921,13 @@ from assay_sdk.voice import (  # noqa: E402
     parse_call_record,
     resolve_relative_date,
     simulate_call,
+)
+# Multi-agent handoff contracts, single ownership, permission containment, and tree diffs (assay_sdk/handoffs.py).
+from assay_sdk.handoffs import (  # noqa: E402
+    AgentHandoffContract,
+    AgentTreeNode,
+    build_agent_tree,
+    diff_agent_trees,
+    render_agent_tree,
+    validate_agent_handoffs,
 )

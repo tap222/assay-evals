@@ -544,12 +544,14 @@ def _item(x: dict) -> str:
 # list: what broke first, then what looks wrong, then what nothing checked. The verdict says
 # whether to merge; the first three items say what to look at; the rest is one line of counts.
 
-ORDER = ["security_violation", "identity_violation", "drift_alert", "broken_transition", "voice_regression", "regressed", "weakened", "runner_config", "logged_error", "touched_real", "widened_reach", "unused_access", "new write", "untested, risky", "deploy", "changed", "untested", "expected value"]
-STOPS = {"security_violation", "identity_violation", "drift_alert", "broken_transition", "voice_regression", "regressed", "weakened", "runner_config", "logged_error", "touched_real"}  # what makes the verdict "not safe to merge"
+ORDER = ["security_violation", "identity_violation", "drift_alert", "handoff_violation", "broken_transition", "voice_regression", "regressed", "weakened", "runner_config", "logged_error", "touched_real", "widened_reach", "unused_access", "new write", "handoff_diff", "untested, risky", "deploy", "changed", "untested", "expected value"]
+STOPS = {"security_violation", "identity_violation", "drift_alert", "handoff_violation", "broken_transition", "voice_regression", "regressed", "weakened", "runner_config", "logged_error", "touched_real"}  # what makes the verdict "not safe to merge"
 NOUN = {"security_violation": ("security violation", "security violations"),
         "identity_violation": ("identity violation", "identity violations"),
         "drift_alert": ("runtime drift alert", "runtime drift alerts"),
         "unused_access": ("unused access alert", "unused access alerts"),
+        "handoff_violation": ("handoff contract violation", "handoff contract violations"),
+        "handoff_diff": ("multi-agent tree change", "multi-agent tree changes"),
         "broken_transition": ("broken transition", "broken transitions"),
         "voice_regression": ("voice regression", "voice regressions"),
         "regressed": ("regression", "regressions"), "weakened": ("weakened test", "weakened tests"),
@@ -600,6 +602,10 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
         add("drift_alert", da["text"], detail=da.get("detail", ""),
             key=da.get("key") or f"drift:{da['text']}",
             case=da.get("cases", [None])[0] if da.get("cases") else None)
+    for hv in (run or {}).get("handoff_violations") or []:
+        add("handoff_violation", hv["text"], detail=hv.get("detail", ""),
+            key=hv.get("key") or f"handoff:{hv['text']}",
+            case=hv.get("cases", [None])[0] if hv.get("cases") else None)
     for bt in (run or {}).get("broken_transitions") or []:
         add("broken_transition", bt["text"], detail=bt.get("detail", ""),
             key=bt.get("key") or f"transition:{bt['text']}",
@@ -627,6 +633,10 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
         names = c.get("names") or c.get("cases") or []
         add("new write", c["text"], key=f"write:{c['kind']}:{c['write']}:{c['field']}")
         out[-1]["cases"] = list(names)
+    for hd in (run or {}).get("handoff_diffs") or []:
+        add("handoff_diff", hd["text"], detail=hd.get("detail", ""),
+            key=hd.get("key") or f"handoff_diff:{hd['text']}",
+            case=hd.get("cases", [None])[0] if hd.get("cases") else None)
     for x in (d.get("untested") or {}).get("items", []):
         add("untested, risky" if x["risk"] else "untested", f"not run by any test: {_item(x)}",
             key=f"untested:{x['file']}:{x['function'] or ''}:{x.get('digest', '')}")
@@ -666,10 +676,11 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
 # ---------- marking an item intended ----------
 
 INTENDED = "assay.intended.toml"
-CAN_INTEND = {"runner_config", "logged_error", "touched_real", "widened_reach", "new write", "untested, risky", "untested", "deploy", "changed", "expected value"}
+CAN_INTEND = {"runner_config", "logged_error", "touched_real", "widened_reach", "new write", "handoff_diff", "untested, risky", "untested", "deploy", "changed", "expected value"}
 
 KEY_TO_KIND = {
     "write": "new write",
+    "handoff_diff": "handoff_diff",
     "untested": "untested",
     "deploy": "deploy",
     "changed": "changed",

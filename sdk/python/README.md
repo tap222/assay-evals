@@ -468,6 +468,49 @@ expect(run).no_talk_overs(max_allowed=0)
 expect(run).no_answers_during_hold()
 ```
 
+### Multi-agent handoffs: advice vs transfer contracts and hierarchical tree diffs
+
+```python
+from assay_sdk import (
+    HandoffContract,
+    build_agent_tree,
+    diff_agent_trees,
+    render_agent_tree,
+    validate_agent_handoffs,
+)
+
+contract = HandoffContract(
+    from_agent="support_lead",
+    to_agent="billing_consultant",
+    kind="advice",  # advice (read-only opinion) or transfer (takeover)
+    required_keys=["customer_id", "invoice_id"],
+    read_only=True,
+    allowed_tools=["read_invoice", "check_policy"],
+)
+
+with assay.run("support_flow") as run:
+    run.handoff("billing_consultant", kind="advice",
+                payload={"customer_id": "C-1", "invoice_id": "INV-4"},
+                from_agent="support_lead")
+    run.tool("read_invoice", {"invoice_id": "INV-4"}, agent="billing_consultant")
+    run.answer("Invoice is correct.", agent="billing_consultant")
+
+# 1. Handoff contract verification
+expect(run).valid_agent_handoffs([contract], originating_scope=["read_invoice", "check_policy"])
+expect(run).advice_was_read_only()
+expect(run).transfer_was_accepted()
+expect(run).no_permission_escalation(originating_scope=["read_invoice", "check_policy"])
+
+# 2. Multi-agent execution tree & tree diffing
+tree = build_agent_tree(run)
+print(render_agent_tree(tree))
+# └── support_flow [root]
+#     └── billing_consultant [advice]
+#         • read_invoice
+
+diffs = diff_agent_trees(baseline_tree, candidate_tree)
+```
+
 Each model call also records what its input was made of: the system prompt, tool definitions,
 history and user message in tokens, images and video (count, bytes, size), and settings
 (temperature, max tokens, reasoning effort). `assay.instrument()` reads them from the request;

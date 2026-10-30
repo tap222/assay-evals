@@ -22,7 +22,9 @@ __all__ = ["tool_calls", "assert_called", "assert_not_called", "assert_called_be
            "assert_valid_handoffs", "assert_no_orphaned_effects", "assert_terminal_state",
            "assert_valid_identity", "assert_no_cross_user_credentials", "assert_within_baseline",
            "assert_no_rubber_stamp_approvals", "assert_strictly_approved",
-           "assert_booking_holds", "assert_read_back_details", "assert_no_spoken_leaks", "assert_no_talk_overs"]
+           "assert_booking_holds", "assert_read_back_details", "assert_no_spoken_leaks", "assert_no_talk_overs",
+           "assert_valid_agent_handoffs", "assert_advice_was_read_only", "assert_transfer_was_accepted",
+           "assert_no_permission_escalation"]
 
 
 def rewordings(*wordings: str, arg: str = "wording"):
@@ -955,6 +957,68 @@ class Expectations:
 
         return self._add(f"max_dead_air({max_seconds}s)", check)
 
+    def valid_agent_handoffs(self, contracts: Optional[Sequence[Any]] = None,
+                              originating_scope: Optional[Sequence[str]] = None,
+                              originating_approvals: Optional[Sequence[str]] = None) -> "Expectations":
+        """Expect that all agent handoffs adhere to advice/transfer contracts, single ownership,
+        fact propagation, and permission containment."""
+        from assay_sdk.handoffs import validate_agent_handoffs
+
+        def check():
+            violations = validate_agent_handoffs(
+                self.run, contracts=contracts, originating_scope=originating_scope,
+                originating_approvals=originating_approvals
+            )
+            if violations:
+                return violations[0]
+            return None
+
+        return self._add("valid_agent_handoffs", check)
+
+    def advice_was_read_only(self) -> "Expectations":
+        """Expect that any agent asked for advice performed only read-only actions and returned findings."""
+        from assay_sdk.handoffs import validate_agent_handoffs
+
+        def check():
+            violations = validate_agent_handoffs(self.run)
+            advice_violations = [v for v in violations if "advice" in v.lower()]
+            if advice_violations:
+                return advice_violations[0]
+            return None
+
+        return self._add("advice_was_read_only", check)
+
+    def transfer_was_accepted(self, to_agent: Optional[str] = None) -> "Expectations":
+        """Expect that a transfer/takeover handoff was explicitly accepted and not left unfinished."""
+        from assay_sdk.handoffs import validate_agent_handoffs
+
+        def check():
+            violations = validate_agent_handoffs(self.run)
+            transfer_violations = [v for v in violations if "takeover" in v.lower() or "unaccepted" in v.lower() or "unfinished" in v.lower()]
+            if to_agent:
+                transfer_violations = [v for v in transfer_violations if f"'{to_agent}'" in v]
+            if transfer_violations:
+                return transfer_violations[0]
+            return None
+
+        return self._add("transfer_was_accepted", check)
+
+    def no_permission_escalation(self, originating_scope: Optional[Sequence[str]] = None,
+                                 originating_approvals: Optional[Sequence[str]] = None) -> "Expectations":
+        """Expect that no sub-agent or handoff receiver escalated permissions beyond human-granted scope."""
+        from assay_sdk.handoffs import validate_agent_handoffs
+
+        def check():
+            violations = validate_agent_handoffs(
+                self.run, originating_scope=originating_scope, originating_approvals=originating_approvals
+            )
+            escalation_violations = [v for v in violations if "escalation" in v.lower() or "approval leakage" in v.lower() or "scope containment" in v.lower()]
+            if escalation_violations:
+                return escalation_violations[0]
+            return None
+
+        return self._add("no_permission_escalation", check)
+
     def failures(self) -> List[str]:
         """Every expectation that doesn't hold, as "name: why"."""
         out = []
@@ -1033,3 +1097,24 @@ def assert_no_spoken_leaks(run, forbidden_phrases: Sequence[str]) -> None:
 
 def assert_no_talk_overs(run, max_allowed: int = 0) -> None:
     expect(run).no_talk_overs(max_allowed=max_allowed).verify()
+
+
+def assert_valid_agent_handoffs(run, contracts: Optional[Sequence[Any]] = None,
+                                originating_scope: Optional[Sequence[str]] = None,
+                                originating_approvals: Optional[Sequence[str]] = None) -> None:
+    expect(run).valid_agent_handoffs(contracts=contracts, originating_scope=originating_scope,
+                                     originating_approvals=originating_approvals).verify()
+
+
+def assert_advice_was_read_only(run) -> None:
+    expect(run).advice_was_read_only().verify()
+
+
+def assert_transfer_was_accepted(run, to_agent: Optional[str] = None) -> None:
+    expect(run).transfer_was_accepted(to_agent=to_agent).verify()
+
+
+def assert_no_permission_escalation(run, originating_scope: Optional[Sequence[str]] = None,
+                                    originating_approvals: Optional[Sequence[str]] = None) -> None:
+    expect(run).no_permission_escalation(originating_scope=originating_scope,
+                                         originating_approvals=originating_approvals).verify()

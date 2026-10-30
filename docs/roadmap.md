@@ -446,6 +446,12 @@ phase are marked there too.
     silence during hold (`expect(run).no_answers_during_hold()`), and cumulative dead air (`expect(run).max_dead_air()`).
   - **Voice diff regressions:** compares runs across agent versions (`compare_voice_runs()`), flagging regressions such as
     "stopped reading the time back" or "now answers during hold" in `assay changes`.
+- **Handoffs between agents: advice or a transfer:** explicit contracts, single ownership, permission containment, fact propagation, and hierarchical tree diffing:
+  - **Advice:** the agent asked for an opinion only reads (`read_only=True`). Any write, message sent, or action with an effect fails the case, and findings return to caller (`expect(run).advice_was_read_only()`).
+  - **Take over (Transfer):** the receiving agent explicitly states whether it accepted (`accepted=True` or `run.accept_handoff()`), the task has one owner after (the handing agent makes zero subsequent mutating actions), and unaccepted or unfinished tasks are flagged (`expect(run).transfer_was_accepted()`).
+  - **No permission by message:** actions are held to human-granted originating scope and approvals, narrowed to the task, never wider, preventing escalation or borrowing approvals (`expect(run).no_permission_escalation()`).
+  - **What was handed over:** required facts (customer, constraint, deadline) must not be dropped in the payload.
+  - **Diff visualization as one tree:** builds a hierarchical execution tree from `parent_run_id` and handoffs (`build_agent_tree()`, `render_agent_tree()`), and pinpoints architectural and action differences across versions (`diff_agent_trees()`) in `assay changes`.
 
 ## Not planned
 
@@ -463,23 +469,6 @@ phase are marked there too.
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send
   them to `POST /v1/ingest` directly, or use OpenTelemetry.
-- **Handoffs between agents: advice or a transfer:** one agent asks another either for a second
-  opinion or to take over the next task. These are different promises, and a run records only
-  that a sub-agent ran (`parent_run_id`), not which was asked or what it was allowed to do. A
-  handoff should say which it is, and tests should check that each kept its promise:
-  - **Advice:** the agent asked for an opinion only reads. A write, a message sent or any other
-    action with an effect, in its run, fails the case, and its findings come back to the agent
-    that asked.
-  - **Take over:** the receiving agent says whether it accepted, and the task has one owner after:
-    the agent that handed it off doesn't keep acting on it, and a task handed off and never
-    accepted or finished is flagged, not lost.
-  - **No permission by message:** a request from another agent grants nothing a person didn't.
-    The receiving agent's actions are held to the scope and approvals the person gave the first
-    agent, narrowed to the task it was handed, never wider, and an approval doesn't carry over to a
-    task it wasn't given for.
-  - **What was handed over:** the facts the task needs (the customer, the constraint, the deadline)
-    are in what the first agent passed on, so a handoff that drops one is a finding, not a guess.
-  The diff shows a run with its sub-agents as one tree, so a change in who did what is visible.
 - **Replay recorded runs, decision by decision:** before switching a model, a prompt or a router
   that picks tools, a team wants to know what it would have done on real traffic. Recorded runs
   hold each step's input and each tool's result. Replaying one means giving the new setup the same
