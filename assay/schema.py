@@ -85,7 +85,7 @@ class Step(_E):
     run_id: str = Field(..., max_length=128)
     seq: int = Field(..., ge=0)
     kind: Literal["llm", "tool", "state", "answer", "stage", "approval", "resource", "mcp_prompt", "plan",
-                  "retrieval", "user", "log"]
+                  "retrieval", "user", "log", "voice_call"]
     name: Optional[str] = Field(None, max_length=128)
     parent_seq: Optional[int] = Field(None, ge=0)
     ended_at: Optional[datetime] = None
@@ -158,6 +158,10 @@ class Step(_E):
     credential_type: Optional[str] = Field(None, max_length=64, description="Type of credential (user_oauth, service_account, api_key)")
     credential_owner: Optional[str] = Field(None, max_length=128, description="The person whose credential is being used")
     requested_by: Optional[str] = Field(None, max_length=128, description="The person or system who initiated this request")
+    # voice call
+    call_id: Optional[str] = Field(None, max_length=128, description="voice: platform call id")
+    platform: Optional[str] = Field(None, max_length=64, description="voice: platform name (retell, vapi, bland)")
+    metrics: Optional[Dict[str, Any]] = Field(None, description="voice: call timing metrics")
 
     @field_validator("args", mode="before")
     @classmethod

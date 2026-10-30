@@ -434,6 +434,40 @@ signed_audit = export_signed_audit(records, secret_key="finance_audit_key")
 assert verify_signed_audit(signed_audit, secret_key="finance_audit_key")
 ```
 
+### Voice and phone agents: caller moves, outcomes, and platform timings
+
+```python
+from assay_sdk import CallerMove, VoicePersona, simulate_call, parse_call_record
+
+# 1. Caller moves (hold, silence, interruptions, corrections, compound answers)
+persona = VoicePersona(
+    goal="Book a table for 4",
+    moves=[
+        CallerMove.speak("Hi, I want to book a table for Wednesday at 7pm."),
+        CallerMove.correct("Actually, Thursday at 7pm instead.", field="date", old_value="Wednesday", new_value="Thursday"),
+        CallerMove.hold(seconds=4.0),
+        CallerMove.speak("Yes, Thursday at 7 works, thank you!"),
+    ],
+)
+
+with assay.run("booking_call") as run:
+    sim = simulate_call(my_voice_agent, persona, run=run)
+    run.state("booking", "create", {"date": "Thursday", "time": "7:00 PM", "party": 4})
+
+# 2. Outcome checks
+expect(run).booking_holds(expected={"date": "Thursday"}, initial_rejected={"date": "Wednesday"})
+expect(run).read_back_details(fields=("date", "time"))
+expect(run).resolved_relative_date("next Tuesday", "2026-11-03", fixed_clock=datetime(2026, 10, 30))
+expect(run).no_spoken_leaks(forbidden_phrases=["system prompt", "internal notes"])
+
+# 3. Platform timings (Retell, Vapi, telephony metrics)
+call_record = parse_call_record(vapi_or_retell_webhook_json)
+run.call_record(vapi_or_retell_webhook_json)
+expect(run).voice_latency(max_ttfr_ms=1200.0)
+expect(run).no_talk_overs(max_allowed=0)
+expect(run).no_answers_during_hold()
+```
+
 Each model call also records what its input was made of: the system prompt, tool definitions,
 history and user message in tokens, images and video (count, bytes, size), and settings
 (temperature, max tokens, reasoning effort). `assay.instrument()` reads them from the request;

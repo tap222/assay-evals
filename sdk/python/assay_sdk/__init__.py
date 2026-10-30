@@ -45,7 +45,10 @@ __all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correc
            "check_identity_violations", "compute_identity_metrics", "learn_agent_baseline", "detect_runtime_drift",
            "audit_access_held", "audit_all_agents_access", "query_action_audit", "export_audit_csv",
            "export_signed_audit", "verify_signed_audit", "detect_rubber_stamp_approvals", "hash_arguments",
-           "verify_approval_for_action", "check_self_claimed_approvals"]
+           "verify_approval_for_action", "check_self_claimed_approvals",
+           "CallerMove", "VoicePersona", "VoiceCallRecord", "VoiceTurn", "VoiceCallMetrics", "parse_call_record",
+           "compute_voice_call_metrics", "simulate_call", "resolve_relative_date", "check_read_back",
+           "check_booking_details", "check_spoken_leaks", "check_handoff_summary", "compare_voice_runs"]
 __version__ = "0.5.0"
 
 log = logging.getLogger("assay_sdk")
@@ -334,6 +337,7 @@ class Run:
         self.credential: Optional[str] = None
         self.credential_type: Optional[str] = None
         self.credential_owner: Optional[str] = None
+        self.voice_call_record: Optional[Any] = None
 
     def _case(self) -> Dict[str, Any]:
         if not self.test:
@@ -566,6 +570,15 @@ class Run:
     def answer(self, text: str) -> None:
         self.answer_text = text
         self._step("answer", text=self._c.clean(text))
+
+    def call_record(self, data: Dict[str, Any], platform: Optional[str] = None) -> None:
+        """Attach a voice platform call record (Retell, Vapi, or generic telephony) to this run."""
+        from dataclasses import asdict
+        from assay_sdk.voice import parse_call_record
+        rec = parse_call_record(data, platform=platform)
+        self.voice_call_record = rec
+        self._step("voice_call", None, call_id=rec.call_id, platform=rec.platform,
+                   metrics=asdict(rec.metrics) if hasattr(rec.metrics, "__dataclass_fields__") else rec.metrics)
 
     @contextmanager
     def stage(self, name: str, prompt: Optional[str] = None):
@@ -875,4 +888,21 @@ from assay_sdk.production_security import (  # noqa: E402
     query_action_audit,
     verify_approval_for_action,
     verify_signed_audit,
+)
+# Voice and phone agents (assay_sdk/voice.py).
+from assay_sdk.voice import (  # noqa: E402
+    CallerMove,
+    VoiceCallMetrics,
+    VoiceCallRecord,
+    VoicePersona,
+    VoiceTurn,
+    check_booking_details,
+    check_handoff_summary,
+    check_read_back,
+    check_spoken_leaks,
+    compare_voice_runs,
+    compute_voice_call_metrics,
+    parse_call_record,
+    resolve_relative_date,
+    simulate_call,
 )

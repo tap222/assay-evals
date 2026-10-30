@@ -544,13 +544,14 @@ def _item(x: dict) -> str:
 # list: what broke first, then what looks wrong, then what nothing checked. The verdict says
 # whether to merge; the first three items say what to look at; the rest is one line of counts.
 
-ORDER = ["security_violation", "identity_violation", "drift_alert", "broken_transition", "regressed", "weakened", "runner_config", "logged_error", "touched_real", "widened_reach", "unused_access", "new write", "untested, risky", "deploy", "changed", "untested", "expected value"]
-STOPS = {"security_violation", "identity_violation", "drift_alert", "broken_transition", "regressed", "weakened", "runner_config", "logged_error", "touched_real"}  # what makes the verdict "not safe to merge"
+ORDER = ["security_violation", "identity_violation", "drift_alert", "broken_transition", "voice_regression", "regressed", "weakened", "runner_config", "logged_error", "touched_real", "widened_reach", "unused_access", "new write", "untested, risky", "deploy", "changed", "untested", "expected value"]
+STOPS = {"security_violation", "identity_violation", "drift_alert", "broken_transition", "voice_regression", "regressed", "weakened", "runner_config", "logged_error", "touched_real"}  # what makes the verdict "not safe to merge"
 NOUN = {"security_violation": ("security violation", "security violations"),
         "identity_violation": ("identity violation", "identity violations"),
         "drift_alert": ("runtime drift alert", "runtime drift alerts"),
         "unused_access": ("unused access alert", "unused access alerts"),
         "broken_transition": ("broken transition", "broken transitions"),
+        "voice_regression": ("voice regression", "voice regressions"),
         "regressed": ("regression", "regressions"), "weakened": ("weakened test", "weakened tests"),
         "runner_config": ("test runner configuration change", "test runner configuration changes"),
         "logged_error": ("logged error regression", "logged error regressions"),
@@ -603,6 +604,10 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
         add("broken_transition", bt["text"], detail=bt.get("detail", ""),
             key=bt.get("key") or f"transition:{bt['text']}",
             case=bt.get("cases", [None])[0] if bt.get("cases") else None)
+    for vr in (run or {}).get("voice_regressions") or []:
+        add("voice_regression", vr["text"], detail=vr.get("detail", ""),
+            key=vr.get("key") or f"voice:{vr['text']}",
+            case=vr.get("cases", [None])[0] if vr.get("cases") else None)
     for r in (run or {}).get("widened_reach") or []:
         add("widened_reach", r["text"], detail=r.get("detail", ""),
             key=r.get("key") or f"reach:{r['text']}",

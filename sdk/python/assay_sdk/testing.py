@@ -21,7 +21,8 @@ __all__ = ["tool_calls", "assert_called", "assert_not_called", "assert_called_be
            "assert_within_scope", "assert_fails_closed", "assert_no_data_exfiltration", "assert_used_gateway",
            "assert_valid_handoffs", "assert_no_orphaned_effects", "assert_terminal_state",
            "assert_valid_identity", "assert_no_cross_user_credentials", "assert_within_baseline",
-           "assert_no_rubber_stamp_approvals", "assert_strictly_approved"]
+           "assert_no_rubber_stamp_approvals", "assert_strictly_approved",
+           "assert_booking_holds", "assert_read_back_details", "assert_no_spoken_leaks", "assert_no_talk_overs"]
 
 
 def rewordings(*wordings: str, arg: str = "wording"):
@@ -849,6 +850,111 @@ class Expectations:
             reject_self_claimed=True,
         )
 
+    def booking_holds(self, expected: Dict[str, Any], initial_rejected: Optional[Dict[str, Any]] = None) -> "Expectations":
+        """Expect that the booking holds the final, corrected details, not initial details."""
+        from assay_sdk.voice import check_booking_details
+
+        def check():
+            ok, why = check_booking_details(self.run, expected, initial_rejected)
+            if not ok:
+                return why
+            return None
+
+        return self._add("booking_holds", check)
+
+    def read_back_details(self, fields: Sequence[str] = ("date", "time"),
+                          expected_values: Optional[Dict[str, Any]] = None) -> "Expectations":
+        """Expect that the agent read back confirmed details to the caller before concluding."""
+        from assay_sdk.voice import check_read_back
+
+        def check():
+            ok, why = check_read_back(self.run, required_fields=fields, expected_values=expected_values)
+            if not ok:
+                return why
+            return None
+
+        return self._add("read_back_details", check)
+
+    def resolved_relative_date(self, relative_phrase: str, expected_date: str, fixed_clock: datetime) -> "Expectations":
+        """Expect that relative dates ('next Tuesday', 'tomorrow') resolved correctly against fixed clock."""
+        from assay_sdk.voice import resolve_relative_date
+
+        def check():
+            actual = resolve_relative_date(relative_phrase, fixed_clock)
+            if actual != expected_date:
+                return f"Relative date '{relative_phrase}' resolved to {actual}, expected {expected_date}"
+            return None
+
+        return self._add(f"resolved_relative_date({relative_phrase})", check)
+
+    def no_spoken_leaks(self, forbidden_phrases: Sequence[str]) -> "Expectations":
+        """Expect that no internal instructions or system prompt guidelines were spoken to the caller."""
+        from assay_sdk.voice import check_spoken_leaks
+
+        def check():
+            leaks = check_spoken_leaks(self.run, forbidden_phrases)
+            if leaks:
+                return leaks[0]
+            return None
+
+        return self._add("no_spoken_leaks", check)
+
+    def handoff_carried_summary(self, required_keys: Optional[Sequence[str]] = None) -> "Expectations":
+        """Expect that an escalation to a human agent carried a summary in its handoff payload."""
+        from assay_sdk.voice import check_handoff_summary
+
+        def check():
+            ok, why = check_handoff_summary(self.run, required_keys)
+            if not ok:
+                return why
+            return None
+
+        return self._add("handoff_carried_summary", check)
+
+    def voice_latency(self, max_ttfr_ms: float = 1500.0) -> "Expectations":
+        """Expect that time to first response is within max_ttfr_ms."""
+        def check():
+            call_record = getattr(self.run, "voice_call_record", None)
+            if call_record and call_record.metrics.time_to_first_response_ms is not None:
+                actual = call_record.metrics.time_to_first_response_ms
+                if actual > max_ttfr_ms:
+                    return f"Time to first response was {actual:.0f}ms; at most {max_ttfr_ms:.0f}ms expected"
+            return None
+
+        return self._add(f"voice_latency({max_ttfr_ms}ms)", check)
+
+    def no_talk_overs(self, max_allowed: int = 0) -> "Expectations":
+        """Expect that the agent did not talk over the caller more than max_allowed times."""
+        def check():
+            call_record = getattr(self.run, "voice_call_record", None)
+            if call_record and call_record.metrics.talk_over_count > max_allowed:
+                actual = call_record.metrics.talk_over_count
+                return f"Agent talked over caller {actual} times (max allowed: {max_allowed})"
+            return None
+
+        return self._add(f"no_talk_overs({max_allowed})", check)
+
+    def no_answers_during_hold(self) -> "Expectations":
+        """Expect that the agent stayed silent and did not speak while caller placed call on hold."""
+        def check():
+            call_record = getattr(self.run, "voice_call_record", None)
+            if call_record and call_record.metrics.spoke_during_hold:
+                return "Agent spoke while caller placed call on hold"
+            return None
+
+        return self._add("no_answers_during_hold", check)
+
+    def max_dead_air(self, max_seconds: float = 5.0) -> "Expectations":
+        """Expect that cumulative dead air / silence does not exceed max_seconds."""
+        def check():
+            call_record = getattr(self.run, "voice_call_record", None)
+            if call_record and call_record.metrics.dead_air_seconds > max_seconds:
+                actual = call_record.metrics.dead_air_seconds
+                return f"Total dead air was {actual:.1f}s (max allowed: {max_seconds:.1f}s)"
+            return None
+
+        return self._add(f"max_dead_air({max_seconds}s)", check)
+
     def failures(self) -> List[str]:
         """Every expectation that doesn't hold, as "name: why"."""
         out = []
@@ -910,3 +1016,20 @@ def assert_strictly_approved(run, action: str, server: Optional[str] = None,
                              bind_args: bool = True) -> None:
     expect(run).strictly_approved(action, server=server, allowed_sources=allowed_sources,
                                   max_age_seconds=max_age_seconds, bind_args=bind_args).verify()
+
+
+def assert_booking_holds(run, expected: Dict[str, Any], initial_rejected: Optional[Dict[str, Any]] = None) -> None:
+    expect(run).booking_holds(expected, initial_rejected=initial_rejected).verify()
+
+
+def assert_read_back_details(run, fields: Sequence[str] = ("date", "time"),
+                             expected_values: Optional[Dict[str, Any]] = None) -> None:
+    expect(run).read_back_details(fields=fields, expected_values=expected_values).verify()
+
+
+def assert_no_spoken_leaks(run, forbidden_phrases: Sequence[str]) -> None:
+    expect(run).no_spoken_leaks(forbidden_phrases).verify()
+
+
+def assert_no_talk_overs(run, max_allowed: int = 0) -> None:
+    expect(run).no_talk_overs(max_allowed=max_allowed).verify()

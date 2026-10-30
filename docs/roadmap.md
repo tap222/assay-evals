@@ -430,6 +430,22 @@ phase are marked there too.
     tamper-proof signed packages (`export_signed_audit()`). Detects rubber-stamp approvals decided faster than human
     comprehension threshold (`no_rubber_stamp_approvals()`), rejects self-claimed agent approvals, enforces expiration
     windows, and binds approvals to arguments via canonical SHA-256 argument hashes (`strictly_approved()`).
+- **Voice and phone agents: the call, not just the booking:** caller moves, outcome validation, platform call timings,
+  and voice regression diffs:
+  - **Caller moves:** simulated voice calls (`simulate_call()`, `VoicePersona`, `CallerMove`) supporting hold intervals
+    (`CallerMove.hold(seconds)`), dead air/silence (`CallerMove.silence()`), mid-utterance interruptions
+    (`CallerMove.interrupt()`), corrections overriding earlier facts (`CallerMove.correct()`), compound multi-intent answers
+    (`CallerMove.compound()`), and escalations to human agents (`CallerMove.escalate()`).
+  - **Checks on the outcome, not just the transcript:** verifies that final bookings hold corrected details rather than
+    initial rejected ones (`expect(run).booking_holds()`), verifies the agent read back confirmed details before hanging up
+    (`expect(run).read_back_details()`), verifies relative date resolution ("next Tuesday", "tomorrow") against a fixed clock
+    (`expect(run).resolved_relative_date(fixed_clock=...)`), checks that internal prompt instructions were not spoken aloud
+    (`expect(run).no_spoken_leaks()`), and verifies that human handoffs carried a conversation summary (`expect(run).handoff_carried_summary()`).
+  - **Timing and platform metrics:** ingests call records from Retell, Vapi, and telephony platforms (`parse_call_record()`),
+    computing time to first response (`expect(run).voice_latency()`), overlapping speech talk-overs (`expect(run).no_talk_overs()`),
+    silence during hold (`expect(run).no_answers_during_hold()`), and cumulative dead air (`expect(run).max_dead_air()`).
+  - **Voice diff regressions:** compares runs across agent versions (`compare_voice_runs()`), flagging regressions such as
+    "stopped reading the time back" or "now answers during hold" in `assay changes`.
 
 ## Not planned
 
@@ -447,22 +463,6 @@ phase are marked there too.
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send
   them to `POST /v1/ingest` directly, or use OpenTelemetry.
-- **Voice and phone agents: the call, not just the booking:** most phone agents book the slot
-  when the caller plays along. They differ on what happens around it: hold, silence, being
-  interrupted, a caller who changes an answer. Simulated users (`simulate()`) test a conversation,
-  but only as text taking turns. They should be able to act like callers:
-  - **Caller moves:** go silent or put the agent on hold for a while, interrupt it mid-sentence,
-    correct an earlier answer ("actually, Thursday"), give two answers at once, ask for a person.
-  - **Checks on the outcome, not the transcript:** the booking holds the final, corrected
-    details, not the first ones. The agent read the time back. "Next Tuesday" resolved to the
-    right date against a fixed clock. Nothing from its instructions was spoken that the caller
-    shouldn't hear ("3:30 Pacific"). A handoff to a person carried the summary.
-  - **Timing, from the platform's own call record:** time to first response, gaps after a hold,
-    how often it talked over the caller, read from the transcript timings a voice platform gives
-    (Retell, Vapi and others send them), so the same cases compare two agents or two versions of
-    one.
-  Each failed call is a case that can be run again, and the diff says what changed between
-  versions: "stopped reading the time back", "now answers during hold".
 - **Handoffs between agents: advice or a transfer:** one agent asks another either for a second
   opinion or to take over the next task. These are different promises, and a run records only
   that a sub-agent ran (`parent_run_id`), not which was asked or what it was allowed to do. A
