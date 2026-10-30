@@ -359,9 +359,75 @@ def is_test(path: str) -> bool:
     return bool(PY_TEST.search(path) or JS_TEST.search(path))
 
 
+RUNNER_CONFIG = re.compile(
+    r"(?:^|/)(?:conftest\.py|pytest\.ini|setup\.cfg|tox\.ini|"
+    r"jest\.config\.[cm]?[jt]s|jest\.config\.json|jest\.setup\.[jt]s|setupTests\.[jt]s|"
+    r"vitest\.config\.[cm]?[jt]s|vitest\.config\.mts)$",
+    re.I
+)
+
+
+def is_runner_config(path: str) -> bool:
+    if RUNNER_CONFIG.search(path):
+        return True
+    p = path.lower()
+    if p.endswith("pyproject.toml") or p.endswith("package.json"):
+        return True
+    if ".github/workflows/" in p and (p.endswith(".yml") or p.endswith(".yaml")):
+        return True
+    return False
+
+
+def _parse_diff_lines(diff: str) -> List[int]:
+    lines = []
+    for line in diff.splitlines():
+        if line.startswith("@@"):
+            m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
+            if m:
+                start, n = int(m.group(1)), int(m.group(2) if m.group(2) is not None else 1)
+                lines.extend(range(start, start + n))
+    return sorted(set(lines))
+
+
+def _spans(lines: List[int]) -> str:
+    if not lines:
+        return ""
+    spans = []
+    start = lines[0]
+    prev = start
+    for x in lines[1:]:
+        if x == prev + 1:
+            prev = x
+        else:
+            spans.append(f"{start}-{prev}" if prev > start else f"{start}")
+            start = prev = x
+    spans.append(f"{start}-{prev}" if prev > start else f"{start}")
+    return ", ".join(spans)
+
+
+def runner_config_matters(path: str, diff_text: str) -> Optional[str]:
+    """Returns why the runner config change matters, or None if unrelated."""
+    if RUNNER_CONFIG.search(path):
+        return "changes test runner setup or fixtures"
+    p = path.lower()
+    if p.endswith("pyproject.toml"):
+        if any(k in diff_text for k in ("pytest", "vitest", "addopts", "testpaths")):
+            return "changes pytest or vitest options in pyproject.toml"
+        return None
+    if p.endswith("package.json"):
+        if any(k in diff_text for k in ('"test"', '"jest"', '"vitest"')):
+            return "changes test script or jest config in package.json"
+        return None
+    if ".github/workflows/" in p:
+        if any(k in diff_text.lower() for k in ("pytest", "jest", "vitest", "npm test", "yarn test", "assay test")):
+            return "changes CI test command in workflow"
+        return None
+    return None
+
+
 def scan(root: Path, ref: Optional[str]) -> List[dict]:
-    """Assertions weakened in the working tree against ref's merge base: [{"file", "test", "kind",
-    "line", "before", "after", "related"}]. [] when there's no ref or no git."""
+    """Assertions weakened and test runner configurations changed in the working tree against ref:
+    [{"file", "test", "kind", "line", "before", "after", "related", ...}]. [] when there's no ref or no git."""
     if not ref:
         return []
     base = (_git(root, "merge-base", ref, "HEAD") or "").strip() or ref
@@ -369,18 +435,84 @@ def scan(root: Path, ref: Optional[str]) -> List[dict]:
     diff = _git(root, "diff", "--name-status", "-M", base, "--", ".")  # this project's files, paths from the top
     if diff is None or not top:
         return []
-    tests, code = [], []
+    tests, code, configs = [], [], []
+    tracked_configs = set()
     for line in diff.splitlines():
         parts = line.split("\t")
         status, old, new = parts[0][:1], parts[1], parts[-1]
         if status == "D":
+            if is_runner_config(old):
+                configs.append((status, old, new))
+                tracked_configs.add(old)
             continue
         if is_test(new):
             if status in ("M", "R"):
                 tests.append((old, new))
+        elif is_runner_config(new):
+            configs.append((status, old, new))
+            tracked_configs.add(new)
         elif CODE.search(new):
             code.append(new)
+    for u in (_git(root, "ls-files", "--others", "--exclude-standard") or "").splitlines():
+        if is_runner_config(u) and u not in tracked_configs:
+            configs.append(("?", u, u))
     out = []
+    for status, old, new in configs:
+        if status == "D":
+            out.append({
+                "file": old,
+                "kind": "runner_config",
+                "test": old,
+                "line": 1,
+                "lines": [],
+                "lines_text": "deleted",
+                "detail": f"deleted test runner config {old}",
+                "before": old,
+                "after": "deleted",
+                "related": []
+            })
+            continue
+        if status == "?":
+            try:
+                content = (root / new).read_text(encoding="utf-8", errors="replace")
+                lines_count = len(content.splitlines())
+            except OSError:
+                content = ""
+                lines_count = 0
+            why = runner_config_matters(new, content)
+            if why:
+                lines = list(range(1, max(1, lines_count) + 1)) if lines_count else [1]
+                lines_str = _spans(lines)
+                out.append({
+                    "file": new,
+                    "kind": "runner_config",
+                    "test": new,
+                    "line": lines[0] if lines else 1,
+                    "lines": lines,
+                    "lines_text": lines_str,
+                    "detail": why,
+                    "before": "untracked",
+                    "after": f"new {new}",
+                    "related": []
+                })
+            continue
+        hunk = _git(root, "diff", "-U0", base, "--", new) or ""
+        why = runner_config_matters(new, hunk)
+        if why:
+            lines = _parse_diff_lines(hunk)
+            lines_str = _spans(lines)
+            out.append({
+                "file": new,
+                "kind": "runner_config",
+                "test": new,
+                "line": lines[0] if lines else 1,
+                "lines": lines,
+                "lines_text": lines_str,
+                "detail": why,
+                "before": f"base:{old}",
+                "after": f"modified {new}",
+                "related": []
+            })
     for old, new in tests:
         before = _git(root, "show", f"{base}:{old}")
         try:
@@ -416,6 +548,9 @@ def weakening(found: Iterable[dict]) -> List[dict]:
 
 def describe(f: dict) -> str:
     """One line for the report."""
+    if f.get("kind") == "runner_config":
+        where = f"lines {f['lines_text']}" if f.get("lines_text") else (f"{f['file']}:{f['line']}" if f.get("line") else f["file"])
+        return f"changes how tests run in {f['file']} ({where}): {f.get('detail', 'for a person to confirm')}"
     where = f"{f['file']}:{f['line']}" if f["line"] else f["file"]
     why = f", while {', '.join(f['related'][:2])} changed" if f.get("related") else ""
     if f["kind"] == "removed":
@@ -426,20 +561,25 @@ def describe(f: dict) -> str:
 
 
 def guard(root: Path, ref: Optional[str]) -> Tuple[int, str]:
-    """`assay guard`: (exit code, report). 1 when a test was weakened, 0 when none was, 2 with
-    nothing to compare with."""
+    """`assay guard`: (exit code, report). 1 when a test was weakened or a runner config changed,
+    0 when none was, 2 with nothing to compare with."""
     if not ref:
         return 2, ("Nothing to compare with: pass --base <branch>, or set ASSAY_BASE_REF. "
                    "In a pull request, that's the branch it merges into.")
     found = scan(root, ref)
-    loose, notes = weakening(found), [f for f in found if f["kind"] == "rewritten"]
+    loose = weakening(found)
+    configs = [f for f in found if f["kind"] == "runner_config"]
+    notes = [f for f in found if f["kind"] == "rewritten"]
     lines = [f"Compared with {ref} (merge base).", ""]
     if loose:
         lines += [f"{len(loose)} assertion change{'s' * (len(loose) != 1)} weaken{'s' * (len(loose) == 1)} the tests:",
                   *(f"  - {describe(f)}" for f in loose), ""]
+    if configs:
+        lines += [f"{len(configs)} test runner configuration change{'s' * (len(configs) != 1)} (for a person to confirm):",
+                  *(f"  - {describe(f)}" for f in configs), ""]
     if notes:
         lines += [f"{len(notes)} expected value{'s' * (len(notes) != 1)} changed (check they're the change you meant):",
                   *(f"  ~ {describe(f)}" for f in notes), ""]
-    if not found:
+    if not (loose or configs or notes):
         lines.append("No test was weakened.")
-    return (1 if loose else 0), "\n".join(lines).rstrip()
+    return (1 if (loose or configs) else 0), "\n".join(lines).rstrip()

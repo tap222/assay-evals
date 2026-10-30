@@ -151,7 +151,11 @@ and `assay calibrate` fails a judge that read dev or test (see
 `assay.faults(get_supplier={"returns": [assay.REAL, {"status": "on_hold"}]})` changes what it
 returns between calls (a state that moves while the agent works). `faults(charge="lost")` lets
 the call go through and loses its reply, and `expect(run).at_most_once("charge", key="order_id")`
-fails a retry that charged twice;
+fails a retry that charged twice. `assay.duplicate(handle, req, run=...)` (and `await assay.aduplicate(...)`)
+simulates duplicate delivery (webhooks, double clicks) and `expect(run).duplicate_safe()` checks the
+second delivery changes nothing, still answers success (not HTTP 409 Conflict, which causes retries to
+pile up), and was recorded as a duplicate; `must_call("db.search")` and `at_most_once("payments.charge")`
+name tools by MCP server, and `expect(run).no_tool_collisions()` flags colliding tool names offered by multiple servers;
 `expect(run).handles_failure()`, `.no_false_success()`, `.well_formed_arguments()` and
 `.checkpoint(name, ...)` check what the agent did about it (see [agents](../../docs/agents.md)).
 `run.search("policies", index.search, question)` records a retrieval and returns what it found;
@@ -161,7 +165,13 @@ name. `handles_failure()` then checks the answer said it couldn't find it, and
 
 `expect(run).must_abstain()` marks a case whose sources don't answer its question: the answer has
 to say so ("the documents don't say") rather than fill the gap. `.must_not_abstain()` is the other
-half, for a question they do answer. `assay test` counts the two apart (see
+half, for a question they do answer. `expect(run).citations_valid()` checks that citations the answer
+gives match retrieved sources, pages, and claim support (a right claim with a wrong page fails as a
+wrong citation, not as a wrong answer). `expect(run).no_logged_errors()` guards against tests logging
+errors or warnings and still passing silently. `expect(run).no_external_touches()` guards against tests
+reaching real-world systems (commands like `scp`, non-local sockets, outside writes). `assay.offline()` and
+`assay test --offline` provide an opt-in offline sandbox where non-local sockets are refused and outside
+file writes fail loudly. `assay test` counts them apart (see
 [faithfulness](../../docs/agents.md#faithfulness-is-the-answer-backed-by-what-was-retrieved)).
 
 `assay.claim_review(run_id, claim, verdict, evidence=..., correction=..., by=...)` records an
@@ -319,7 +329,326 @@ The run failed Assay's checks:
 `expect(run)` declares everything a run should do, checked together when the test ends:
 `expect(run).must_call("get_order").must_not_call("delete_order").max_steps(8)
 .must_get_approval_before("refund").max_cost(0.05).max_latency(8).max_tools_exposed(10)
-.max_context_tokens(8000).must_resolve()`.
+.max_context_tokens(8000).must_resolve().within_scope(scope).fails_closed("check_perm", "refund")
+.no_untrusted_taint().no_data_exfiltration().used_gateway("gateway.internal")`.
+
+### Agent security: scopes, fails-closed, probes, and gate testing
+
+```python
+from assay_sdk import Scope, PathWithin, probe, PolicyGate, evaluate_policy_gate
+
+# 1. Scopes per case
+scope = Scope(
+    tools=["get_order", "search", "read_file"],
+    arg_constraints={"customer_id": "cust_123", "path": PathWithin("/workspace/docs")},
+    allowed_hosts=["api.stripe.com"],
+    protected_hosts=["internal-db.corp"],
+)
+expect(run).within_scope(scope)
+
+# 2. Fails closed on permission checks
+# When check_permission faults (timeout, error) or returns denied, refund must not run
+expect(run).fails_closed("check_permission", "execute_refund")
+
+# 3. Security probes
+res = probe(my_agent, "Delete all accounts", forbidden_actions=["delete_account"])
+assert res.passed
+
+# 4. Taint tracking and markdown exfiltration prevention
+expect(run).no_untrusted_taint()      # planted values in retrieved docs cannot flow to outbound tools
+expect(run).no_data_exfiltration()    # detects markdown image/link exfiltration in answers
+
+# 5. LLM Gateway governance
+expect(run).used_gateway("llm-gateway.internal.net")  # fails on direct calls bypassing the gateway
+```
+
+### Cross-cutting agent reliability scenarios
+
+```python
+from assay_sdk import Scenario, HandoffContract, crash_at
+
+scenario = Scenario(
+    name="order_fulfillment",
+    handoffs=[
+        HandoffContract(from_agent="support", to_agent="billing", kind="advice"),       # advice: read-only
+        HandoffContract(from_agent="cart", to_agent="fulfillment", kind="transfer",    # transfer: single owner
+                        required_keys=["order_id", "address"]),
+    ],
+    expected_terminal_state="resolved",
+    read_back=lambda: fetch_order_from_db("O-1"),
+    compensations={"charge": "refund"},  # charge must be refunded if subsequent step fails
+)
+
+# Simulate crash right after remote call
+with crash_at(tool="charge", when="after"):
+    my_agent("Buy item", run=run)
+
+# Expectations for reliability
+expect(run).valid_handoffs(scenario.handoffs)
+expect(run).terminal_state("resolved", read_back=lambda: get_order_state("O-1"))
+expect(run).no_orphaned_effects(compensations={"charge": "refund"})
+expect(run).scenario_passed(scenario)
+```
+
+### Agent security in production: identity, drift, and approvals
+
+```python
+from assay_sdk import (
+    AgentBaseline,
+    audit_access_held,
+    detect_runtime_drift,
+    export_audit_csv,
+    export_signed_audit,
+    query_action_audit,
+    verify_signed_audit,
+)
+
+# 1. Identity & credential tracking
+with assay.run("task", agent_id="support_bot", owner="team-billing@corp.com",
+               requested_by="customer_101", credential="sa_billing",
+               credential_type="service_account") as run:
+    run.tool("read_order", {"order_id": "O-1"})
+    run.approval("refund", "approved", by="finance_lead", args={"amount": 50}, source="human")
+    run.tool("refund", {"amount": 50})
+
+expect(run).has_valid_identity()
+expect(run).no_cross_user_credentials()
+
+# 2. Runtime drift against history (new hosts, new tables, read-to-write operations, volume anomalies)
+baseline = AgentBaseline.from_runs(past_runs, agent_id="support_bot")
+expect(run).within_baseline(baseline)
+
+# 3. Access held but unused (trim over-permissioned tools inactive for 30+ days)
+report = audit_access_held({"agent_id": "support_bot", "owner": "alice@corp.com",
+                            "tools": ["read_order", "refund", "delete_database"]},
+                           runs=past_month_runs, inactive_days=30)
+# report.recommended_permissions contains only actively used tools
+
+# 4. Action audits, rubber-stamp detection, and argument-hash binding
+expect(run).no_rubber_stamp_approvals(min_review_seconds=1.0)
+expect(run).strictly_approved("refund")  # verifies source, freshness, and arg-hash binding
+
+records = query_action_audit(past_month_runs, action="refund", min_amount=100.0)
+csv_export = export_audit_csv(records)
+signed_audit = export_signed_audit(records, secret_key="finance_audit_key")
+assert verify_signed_audit(signed_audit, secret_key="finance_audit_key")
+```
+
+### Voice and phone agents: caller moves, outcomes, and platform timings
+
+```python
+from assay_sdk import CallerMove, VoicePersona, simulate_call, parse_call_record
+
+# 1. Caller moves (hold, silence, interruptions, corrections, compound answers)
+persona = VoicePersona(
+    goal="Book a table for 4",
+    moves=[
+        CallerMove.speak("Hi, I want to book a table for Wednesday at 7pm."),
+        CallerMove.correct("Actually, Thursday at 7pm instead.", field="date", old_value="Wednesday", new_value="Thursday"),
+        CallerMove.hold(seconds=4.0),
+        CallerMove.speak("Yes, Thursday at 7 works, thank you!"),
+    ],
+)
+
+with assay.run("booking_call") as run:
+    sim = simulate_call(my_voice_agent, persona, run=run)
+    run.state("booking", "create", {"date": "Thursday", "time": "7:00 PM", "party": 4})
+
+# 2. Outcome checks
+expect(run).booking_holds(expected={"date": "Thursday"}, initial_rejected={"date": "Wednesday"})
+expect(run).read_back_details(fields=("date", "time"))
+expect(run).resolved_relative_date("next Tuesday", "2026-11-03", fixed_clock=datetime(2026, 10, 30))
+expect(run).no_spoken_leaks(forbidden_phrases=["system prompt", "internal notes"])
+
+# 3. Platform timings (Retell, Vapi, telephony metrics)
+call_record = parse_call_record(vapi_or_retell_webhook_json)
+run.call_record(vapi_or_retell_webhook_json)
+expect(run).voice_latency(max_ttfr_ms=1200.0)
+expect(run).no_talk_overs(max_allowed=0)
+expect(run).no_answers_during_hold()
+```
+
+### Multi-agent handoffs: advice vs transfer contracts and hierarchical tree diffs
+
+```python
+from assay_sdk import (
+    HandoffContract,
+    build_agent_tree,
+    diff_agent_trees,
+    render_agent_tree,
+    validate_agent_handoffs,
+)
+
+contract = HandoffContract(
+    from_agent="support_lead",
+    to_agent="billing_consultant",
+    kind="advice",  # advice (read-only opinion) or transfer (takeover)
+    required_keys=["customer_id", "invoice_id"],
+    read_only=True,
+    allowed_tools=["read_invoice", "check_policy"],
+)
+
+with assay.run("support_flow") as run:
+    run.handoff("billing_consultant", kind="advice",
+                payload={"customer_id": "C-1", "invoice_id": "INV-4"},
+                from_agent="support_lead")
+    run.tool("read_invoice", {"invoice_id": "INV-4"}, agent="billing_consultant")
+    run.answer("Invoice is correct.", agent="billing_consultant")
+
+# 1. Handoff contract verification
+expect(run).valid_agent_handoffs([contract], originating_scope=["read_invoice", "check_policy"])
+expect(run).advice_was_read_only()
+expect(run).transfer_was_accepted()
+expect(run).no_permission_escalation(originating_scope=["read_invoice", "check_policy"])
+
+# 2. Multi-agent execution tree & tree diffing
+tree = build_agent_tree(run)
+print(render_agent_tree(tree))
+# └── support_flow [root]
+#     └── billing_consultant [advice]
+#         • read_invoice
+
+diffs = diff_agent_trees(baseline_tree, candidate_tree)
+```
+
+### Replay recorded runs, decision by decision
+
+```python
+from assay_sdk import (
+    Decision,
+    replay_decision_by_decision,
+    assert_no_risky_divergences,
+    assert_replay_agreement,
+)
+
+# Replay past recorded runs against candidate model / prompt / router
+def candidate_agent(history, input, step_index, tool_definitions=None):
+    # Candidate makes decisions given the history up to each step
+    if step_index == 0:
+        return Decision.call("lookup_user", {"id": "u1"})
+    return Decision.stop("Found user details.")
+
+report = replay_decision_by_decision(past_runs, candidate_agent)
+print(report.summary())
+# Replay decision-by-decision: 50 run(s) replayed
+#   Overall agreement rate: 98.2%
+#   Divergences: 2 total (1 another tool, 1 different args, 0 stopped early, 0 went further)
+#   Risk weighting: 0 write/spend (HIGH), 2 read (LOW)
+#   Scoring: 1 better, 0 worse, 1 unclear, 48 identical runs
+
+# Assert no risky divergences on write or spend tools
+expect(report).no_risky_divergences()
+expect(report).min_replay_agreement(0.95)
+```
+
+### The same model, served differently: serving diffs and first differing step
+
+```python
+from assay_sdk import (
+    ServingSetup,
+    compare_serving_setups,
+    find_first_differing_step,
+    assert_cost_savings,
+    assert_no_stable_regressions,
+)
+
+# 1. Record serving infrastructure with calls
+setup_fp16 = ServingSetup(quantization="fp16", engine="vllm", engine_version="0.5.4", hardware="A100")
+setup_4bit = ServingSetup(quantization="4-bit", engine="vllm", engine_version="0.6.2", hardware="L40S")
+
+with assay.run("classify_doc", serving=setup_4bit) as run:
+    run.llm(model="llama-3.3-70b", tokens_in=600, tokens_out=80, cost_usd=0.003, text="Legal contract")
+    run.answer("Legal contract")
+
+expect(run).serving_matches(setup_4bit)
+
+# 2. Compare test cases across both setups
+report = compare_serving_setups(
+    baseline_runs,
+    candidate_runs,
+    baseline_setup=setup_fp16,
+    candidate_setup=setup_4bit,
+    historically_stable_cases={"classify_doc", "extract_total"},
+)
+print(report.summary())
+# Model serving diff (vllm 0.6.2 4-bit (L40S) vs vllm 0.5.4 fp16 (A100)):
+#   Cost & Latency: saves 60.0%, -45.0% faster
+#   Cases: 3 changed out of 47 total (1 previously stable)
+#   Changed cases (stable cases first):
+#     • extract_total [PREVIOUSLY STABLE] (first differed at step 2)
+
+# 3. Pinpoint the first differing step in multi-step agent runs
+diff = find_first_differing_step(base_agent_run, cand_agent_run)
+if diff:
+    print(f"First divergence at step {diff.step_index}: {diff.explanation}")
+
+expect(report).cost_savings_at_least(50.0)
+expect(report).no_stable_regressions()
+```
+
+### Evidence diffs and decision provenance
+
+Detect when an answer stayed the same ("Claim approved") but the underlying evidentiary basis changed (read superseded v1 policy, or queried a different customer's record):
+
+```python
+from assay_sdk import (
+    compare_case_evidence,
+    compare_evidence_diffs,
+    extract_decision_provenance,
+    expect,
+)
+
+# Decision provenance records policy versions and documents consulted
+prov = extract_decision_provenance(run)
+print(prov.policy_versions, prov.entities_consulted)
+
+# Compare candidate run against baseline run
+diff = compare_case_evidence(base_run, cand_run, target_entity="cust_123")
+if diff.is_changed_basis_finding:
+    print("Warning: Answer is identical, but evidence basis changed!")
+    print(f"Dropped: {len(diff.dropped_evidence)}, Superseded: {len(diff.superseded_evidence)}")
+
+# Assertions in test suites
+expect(cand_run).no_changed_basis(base_run)
+expect(cand_run).no_superseded_evidence(base_run)
+expect(cand_run).no_wrong_entity_records(target_entity="cust_123")
+```
+
+### Retrieval on its own: two retrievers or rerankers, compared query by query
+
+Compare two retrievers, embedding models, or rerankers against ground-truth relevance labels (`Qrels`), score recall@k, MRR, and nDCG, attribute dropouts across stages, check latency percentiles, and generate handoff pages:
+
+```python
+from assay_sdk import (
+    Qrels,
+    compare_retrieval,
+    expect,
+)
+
+# 1. Load relevance labels from TREC qrels, CSV, or dictionary
+qrels = Qrels.from_dict({
+    "q_return_policy": {"kb-return-policy": 1.0, "kb-exceptions": 1.0},
+    "q_shipping": {"kb-shipping-fees": 1.0},
+}, slices={"q_return_policy": "returns", "q_shipping": "shipping"})
+
+# Conjunctive evidence ("all the evidence, not some")
+qrels.set_conjunctive("q_return_policy", {"kb-return-policy", "kb-exceptions"})
+
+# 2. Compare baseline and candidate runs
+report = compare_retrieval(baseline_results, candidate_results, qrels, k=5)
+print(report.summary())
+
+# 3. Generate a complete stakeholder handoff page and regression guard tests
+handoff_markdown = report.generate_handoff_page()
+guard_tests = report.make_regression_tests()
+
+# 4. Guard test suites against regressions
+expect(report).no_retrieval_regressions()
+expect(report).recall_improved_or_equal()
+expect(report).latency_p95_below(120.0)  # ms
+expect(report).labels_clean()
+expect(report).all_conjunctive_evidence_retrieved()
+```
 
 Each model call also records what its input was made of: the system prompt, tool definitions,
 history and user message in tokens, images and video (count, bytes, size), and settings

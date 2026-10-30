@@ -28,15 +28,16 @@ The verdict is one of three:
 
 Everything found is ranked into one list, and the first three are shown:
 
-1. **Regressed:** a case that passed on its baseline and fails now, from the last `assay test`
-   or `pytest --assay` run, with what changed next to it (a prompt, a model, a tool's definition).
-2. **Weakened:** an assertion loosened or removed ([the guard](security.md)).
-3. **New writes to check:** a placeholder saved, money left empty, a sent value that never reached
-   a row ([database writes](../sdk/js/README.md#new-writes-checked)).
-4. **Changed lines no test ran**, money, messages, logins, database writes and outside calls first.
-5. **Deploy and dependency changes no CI job checked.**
-6. **Changed, still passing:** a case that takes another path now, though its checks pass.
-7. **The rest:** untested lines of lower risk, and expected values the change rewrote.
+1. **Security & Identity Violations:** unauthorized actions, credential misuse, cross-user credential leaks, and autonomous security red flags.
+2. **Runtime Drift Alerts:** agents contacting new hosts, tables, or switching from reads to writes against historical baselines.
+3. **Decision Divergences & Regressions:** candidate model decision divergence on state-mutating actions, and test cases that passed on their baseline and fail now.
+4. **Evidence Diffs & Retrieval Regressions:** unchanged answers resting on changed or superseded evidence, cross-entity leakage, and retrieval recall/ranking drops across pipeline stages.
+5. **Handoff Violations & Broken Transitions:** unaccepted agent transfers, advice agents performing writes, cascaded multi-agent failures, and voice platform call regressions.
+6. **Weakened Tests & Runner Config Changes:** assertions loosened/removed, or modifications to runner configuration files (`conftest.py`, `pytest.ini`, Jest/CI configs).
+7. **Tests reached something real & Logged Errors:** non-local sockets, outside writes, or new error log patterns introduced.
+8. **New writes to check:** placeholders saved, money left empty, or sent values that never reached a row.
+9. **Changed lines no test ran:** money, messages, logins, database writes and outside calls first.
+10. **The rest:** untested lower-risk lines, deploy changes, model serving infrastructure changes, and rewritten expected values.
 
 One change seen in many cases is one item: "refund ran before its approval (refund_a, and 4 more
 cases)". Flaky tests are a count, not items: they did what they did before. Test results from a run on
@@ -59,6 +60,12 @@ sees it and a reviewer reads the reason in the pull request. Each mark matches o
 flagged: the same unrun lines, the same file contents, the same behavior change. If that changes
 again, the item comes back. Regressions and weakened tests can't be marked here: `assay accept`,
 `assay ack` and the policy label are for those.
+
+Track which flags get marked intended and identify kinds people have learned to ignore:
+
+```bash
+assay changes --intended-stats
+```
 
 ## Changed lines no test ran
 

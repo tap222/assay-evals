@@ -305,6 +305,45 @@ expected." A call counts when it ran: it succeeded, or `lost` dropped its reply.
 before it ran (`error`, `timeout`) doesn't. The same check fits a booking, an email or anything
 else that mustn't happen twice.
 
+**The same request sent twice (webhooks and double clicks).** A client that sends the whole request
+again (a double click, a webhook delivered twice) tests idempotency across runs. `duplicate()`
+sends the request a second time in a duplicate run context and checks that the second delivery changes
+nothing, still answers success to the sender (not an HTTP `409 Conflict`, which causes senders to retry
+repeatedly and retries to pile up), and is recorded as a duplicate:
+
+```python
+res = assay.duplicate(handle_payment_webhook, payload, run=assay_case, key="order_id")
+res.verify()
+```
+
+Or check explicitly with `expect(run).duplicate_safe(duplicate_run)`:
+
+```python
+expect(first_run).duplicate_safe(duplicate_run, key="order_id")
+```
+
+For async handlers, `await assay.aduplicate(handle_payment_webhook, payload, run=assay_case)` works the same way.
+
+**The same tool name on two MCP servers.** When an agent connects to multiple MCP servers, two servers
+can both offer a tool named `search`. An agent calling `search` leaves the client or model to pick one
+arbitrarily without saying so.
+
+Contracts and assertions can name tools by server:
+
+```python
+expect(run).must_call("db.search", query="customers")
+expect(run).must_not_call("web.search")
+expect(run).at_most_once("payments.charge", key="order_id")
+expect(run).must_get_approval_before("db.drop_table")
+```
+
+And `expect(run).no_tool_collisions()` verifies that no model call in the run was offered the same
+tool name by multiple MCP servers:
+
+```python
+expect(run).no_tool_collisions()
+```
+
 **The world changing while the agent works.** An approval checked when the agent plans can be stale
 by the time it acts. `{"returns": [a, b, ...]}` gives a tool one value per call, the last one from
 then on, and `assay.REAL` in the list calls the tool for real. The invoice stays approved, and the
@@ -559,6 +598,21 @@ def test_refund_window(assay_case):
     rag(assay_case, "How long do refunds take?")
 ```
 
+**Citations the answer gives, checked.** Faithfulness checks whether claims are backed by fragments,
+but does not check the answer's own inline citations (`[policy.pdf, page 12]`, `(handbook.md, sec. 2)`).
+`expect(run).citations_valid()` checks each citation:
+  1. The cited source was retrieved in the run.
+  2. The cited page and section match the retrieved metadata.
+  3. The cited source actually says what the sentence citing it says.
+
+A right claim with the wrong page fails as a wrong citation, not as a wrong answer:
+
+```python
+def test_answer_citations(assay_case):
+    expect(assay_case).citations_valid(require_citations=True)
+    rag(assay_case, "What is the return window?")
+```
+
 An answer abstains when a sentence says the sources don't answer the question: "the documents
 don't say", "I couldn't find anything about", "not covered in the sources". "The policy doesn't
 cover water damage" is an answer, not an abstention. The two expectations are counted apart from
@@ -622,3 +676,49 @@ With `[prices]` (or `ASSAY_PRICES`), model calls recorded without a cost get one
 tokens, so the cost checks have numbers to compare. On a pull request, the limits and `suite`
 are held to the base branch's, like every other check: raising a limit is reported as
 loosening it.
+
+### Multi-agent handoff contracts: advice or transfer
+
+Multi-agent architectures divide responsibilities across specialists. Assay enforces clear handoff semantics:
+- **Advice (`AgentHandoffContract(kind="advice")`):** the consulting agent only reads (`read_only=True`). Any tool call with a side effect fails the case (`expect(run).advice_was_read_only()`).
+- **Transfer (`AgentHandoffContract(kind="transfer")`):** the receiving agent explicitly accepts (`accepted=True`), and the originating agent performs no subsequent mutating actions.
+- **Permission Containment:** originating approvals and scopes cannot be widened or borrowed by message (`expect(run).no_permission_escalation()`).
+- **Execution Tree Diffing:** `diff_agent_trees(base_root, cand_root)` pinpoints architectural changes, missing handoffs, and dropped context facts across versions.
+
+### Production security, identity drift, and action audits
+
+Assay guards production agents against privilege creep and silent drift:
+- **Identity Tracking:** records `agent_id`, `owner`, and credential delegation (`expect(run).has_valid_identity()`, `expect(run).no_cross_user_credentials()`).
+- **Runtime Drift:** learns operational boundaries from past runs (`AgentBaseline.from_runs()`) and flags new hosts, new tables, or read-to-write shifts (`expect(run).within_baseline(baseline)`).
+- **Rubber-Stamp Detection:** binds approvals to canonical argument hashes (`arg_hash`) and rejects decisions made faster than human comprehension thresholds (`no_rubber_stamp_approvals()`).
+- **Access Audit:** audits granted tools and trims inactive permissions unused for 30+ days (`audit_access_held()`).
+
+### Voice and telephony agents
+
+Simulates phone conversations and validates telephony platform outcomes:
+- **Caller Moves:** simulates caller interruptions, holds, silence/dead air, multi-intent replies, and mid-call corrections (`simulate_call()`, `CallerMove`).
+- **Outcome & Speech Verification:** ensures corrected dates/times hold in bookings (`expect(run).booking_holds()`), details were read back (`expect(run).read_back_details()`), and system prompts were not leaked into spoken audio (`expect(run).no_spoken_leaks()`).
+- **Timing Metrics:** parses telephony records from Retell, Vapi, and Bland for latency to first audio, talk-overs, and dead air duration (`compute_voice_call_metrics()`).
+
+### Decision-by-decision replay
+
+Simulates candidate models, prompts, or tool routers step by step against historical production traces:
+- **Decision Divergence:** feeds recorded history into the candidate and checks its next action (`replay_decision_by_decision()`).
+- **No Re-execution:** tools are not executed again; recorded outputs are returned so no state is modified.
+- **Risk-Weighted Divergences:** divergences on write/payment tools are ranked as high-risk regressions (`expect(report).no_risky_divergences()`).
+
+### Evidence diffs and decision provenance
+
+Detects when an answer is unchanged ("Claim approved") but rests on altered or invalid evidence:
+- **Decision Provenance:** captures policy versions, retrieved fragments (`version`, `date`, `entity`), and consulted records (`extract_decision_provenance()`).
+- **Changed Basis Findings:** flags dropped, added, or swapped evidence under unchanged answers as a critical finding, not a pass (`expect(run).no_changed_basis()`).
+- **Superseded & Cross-Entity Records:** flags when an agent consulted outdated policy versions (`no_superseded_evidence()`) or another customer's data (`no_wrong_entity_records()`).
+
+### Retrieval on its own: query-by-query comparison
+
+Evaluates retrievers and rerankers against ground-truth labels (`Qrels`):
+- **Recall@k, MRR, nDCG@k:** evaluates candidate retrievers across query slices.
+- **Multi-Stage Dropout Attribution:** traces candidates through routing, dense search, filtering, and reranking to report exactly where a document dropped out (`attribute_dropout()`).
+- **Conjunctive Evidence:** verifies all mandatory passages were retrieved for complex multi-part queries ("all the evidence, not some").
+- **Latency Percentiles:** tracks p50, p95, and p99 timings for search and reranking stages.
+- **Handoff Page:** generates publication-ready Markdown reports with generated regression test cases (`report.generate_handoff_page()`).

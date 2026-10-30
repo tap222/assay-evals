@@ -347,6 +347,135 @@ phase are marked there too.
   `handles_failure()` fails an answer that goes on as if a failed or empty search had found the
   evidence. `expect(run).must_retrieve(name, source=...)` fails a case that never searched where its
   evidence is.
+- **The same request sent twice (webhooks, double clicks):** `assay.duplicate(fn, request, run=...)`
+  (and `await assay.aduplicate(...)` for coroutines) simulates client double clicks and webhook
+  redeliveries. `expect(run).duplicate_safe()` verifies the second delivery changed nothing (no
+  repeated side-effecting tool calls, charges, or writes), answered success to the sender (not an
+  HTTP `409 Conflict`, which causes the sender to retry repeatedly and retries to pile up), and was
+  recorded as a duplicate with its original run id.
+- **The same tool name on two MCP servers (server-scoped contracts and tool collisions):** with
+  multiple MCP servers behind an agent, two servers can both offer `search` and the client picks
+  one arbitrarily. `must_call("db.search")`, `must_not_call("web.search")`, and `at_most_once("payments.charge")`
+  allow contracts and assertions to name tools by server. `expect(run).no_tool_collisions()` detects
+  and flags when two MCP servers offer the same tool name in the same model call.
+- **Citations the answer gives, checked:** `expect(run).citations_valid()` checks each citation
+  (a document, a page, a section) against the sources retrieved in the run. It verifies that the cited
+  source exists and was retrieved, matches the cited page and section metadata, and actually says what
+  the sentence citing it says. A right claim with the wrong page fails as a wrong citation, not as a
+  wrong answer.
+- **The files that decide how tests run, guarded like the tests:** changes to test runner configuration
+  files (`conftest.py`, `pytest.ini`, `setup.cfg`, `tox.ini`, Jest and Vitest configs, `pyproject.toml` pytest
+  options, `package.json` test scripts, and CI workflow test steps) are guarded alongside weakened
+  assertions with exact changed lines. `assay guard` lists them for human confirmation and halts unsafe merges
+  until marked intended. `assay changes --intended-stats` tracks which flags get marked intended and flags
+  kinds with high ignore rates before the rest stop being read.
+- **Errors a test logged and still passed:** errors and warnings logged during each test (Python `logging`
+  and `warnings`, `console.error` and `console.warn`) are captured and parameterized into templates with IDs,
+  numbers, and PII removed ("user 1234 not found" and "user 5678 not found" are one template). Compared with
+  the base branch, templates no test logged before are listed with the tests that logged them and the changed
+  function they came from; familiar errors occurring significantly more often (>= 3x) count as regressions.
+  Templates logged at the same rate on the base branch are left out to keep suites quiet. `expect(run).no_logged_errors()`
+  guards tests in the suite.
+- **Tests that reached something real:** monitors commands started (`scp`, `rsync`, `psql`), non-local socket
+  connections, and file writes outside the repository and temporary folders. Any real-world access not touched by
+  the base branch is caught and listed in the change report (`touched_real`). An opt-in offline mode
+  (`assay test --offline`, `pytest --assay --offline`, `assay.offline()`) refuses non-local sockets and blocks
+  outside writes loudly so forgotten fakes never reach real systems. `expect(run).no_external_touches()` guards
+  agent test cases.
+- **Agent security: scope tests and security alerts:** per-case scope tests, fails-closed permission
+  checks, security probes, provenance taint tracking, markdown data exfiltration detection, policy gate
+  evaluation, autonomous security scanning, gateway governance, and agent reach profiling:
+  - **A scope per case:** `Scope(tools=..., arg_constraints=..., allowed_hosts=..., protected_hosts=..., base_path=...)`
+    and `expect(run).within_scope(scope)` enforce allowed tools, parameter values, canonical path resolution
+    (`PathWithin` preventing `../` traversal or symlink escapes), and protected/allowed network endpoints.
+  - **Fails closed:** `expect(run).fails_closed(permission_tool, protected_action)` verifies that when permission
+    checks fail or fault (error, timeout, lost), protected operations never execute.
+  - **Probes:** `probe(agent_fn, prompt, forbidden_actions=[...])` verifies agent refusal and boundary safety on
+    adversarial prompts.
+  - **Planted values, taint tracking, and exfiltration:** catches prompt injection planted in retrieved document
+    fragments (`kind == "retrieval"`), flags untrusted values passed to outbound tools (`expect(run).no_untrusted_taint()`),
+    and detects markdown image/link exfiltration in answers (`expect(run).no_data_exfiltration()`).
+  - **Policy gate evaluation:** `PolicyGate` and `evaluate_policy_gate(decisions)` track allow/block/needs_approval
+    decisions across policy versions, reporting normal blocked rates and attacks allowed rates.
+  - **Autonomous security scanner:** `scan_security_flags(run)` inspects runs without pre-written rules, flagging
+    secrets (.env, keys, tokens), destructive actions (`rm -rf`, DROP TABLE, refunds), privilege escalation (`sudo`,
+    chmod 777), and data leaving (`expect(run).no_security_flags()`).
+  - **Agent reach profiling & widening:** `profile_agent_reach()` profiles capabilities (read, write, delete, spend money,
+    send messages, outside hosts), and flags capability widening in `assay changes`.
+  - **Gateway governance:** `check_gateway_bypass(run, gateway_host)` and `expect(run).used_gateway(gateway_host)`
+    fail tests whose code calls model providers or governed services directly instead of through the gateway.
+- **Cross-cutting agent reliability scenarios:** reusable end-to-end cases that run before a prompt,
+  model, tool-router or orchestration change, and on a schedule. Each handoff has an explicit contract,
+  permission scope and owner (`HandoffContract` for transfer vs advice); each run is checked for the right
+  terminal state with external read-back from the system of record (`read_back`), not just the agent's claim
+  that it succeeded. Injects timeouts, lost replies, crashes (`crash_at`), and duplicate deliveries, then verifies
+  external state and side effects: no lost task, no duplicate charge or write (`at_most_once`), no action after
+  a handoff (`expect(run).valid_handoffs()`), and no uncompensated actions left standing (`expect(run).no_orphaned_effects()`).
+  When a run fails, pinpoints the first broken transition and its downstream cascade effects
+  (`find_first_broken_transition()`) and reports it in `assay changes`.
+- **Agent security: identity, drift, and approvals in production:** identity tracking, baseline drift alerts,
+  permission auditing, and action audits with rubber-stamp detection:
+  - **Identity tracking:** records agent identity (`agent_id`), owner, caller (`requested_by`), and credentials
+    behind each action. Flags unowned runs (`missing_owner`) and cross-user credential usage (acting with a person's
+    delegated credential on someone else's request: `expect(run).has_valid_identity()`, `expect(run).no_cross_user_credentials()`).
+    Computes fleet metrics: share of actions with known owner and agent identity (`compute_identity_metrics()`).
+  - **Runtime drift against history:** learns operational boundaries from past runs (`AgentBaseline.from_runs()`)
+    and alerts immediately on new hosts, new tables, read-to-write operations (attempting writes where history only read),
+    cross-tenant access, and single-run volume drainage anomalies (`expect(run).within_baseline(baseline)`).
+  - **Access held but unused:** audits granted tools and scopes against the last 30 days of activity (`audit_access_held()`),
+    identifies over-permissioned tools, flags inactive agents holding access and orphaned agents whose owner no longer signs in,
+    and produces a trimmed least-privilege policy (`recommended_permissions`).
+  - **Action audits & rubber-stamp detection:** answers "what did this agent do, and who approved it?" across runs
+    (`query_action_audit()`) with approver, review time, evidence, and outcome; exports as RFC 4180 CSV and HMAC-SHA256
+    tamper-proof signed packages (`export_signed_audit()`). Detects rubber-stamp approvals decided faster than human
+    comprehension threshold (`no_rubber_stamp_approvals()`), rejects self-claimed agent approvals, enforces expiration
+    windows, and binds approvals to arguments via canonical SHA-256 argument hashes (`strictly_approved()`).
+- **Voice and phone agents: the call, not just the booking:** caller moves, outcome validation, platform call timings,
+  and voice regression diffs:
+  - **Caller moves:** simulated voice calls (`simulate_call()`, `VoicePersona`, `CallerMove`) supporting hold intervals
+    (`CallerMove.hold(seconds)`), dead air/silence (`CallerMove.silence()`), mid-utterance interruptions
+    (`CallerMove.interrupt()`), corrections overriding earlier facts (`CallerMove.correct()`), compound multi-intent answers
+    (`CallerMove.compound()`), and escalations to human agents (`CallerMove.escalate()`).
+  - **Checks on the outcome, not just the transcript:** verifies that final bookings hold corrected details rather than
+    initial rejected ones (`expect(run).booking_holds()`), verifies the agent read back confirmed details before hanging up
+    (`expect(run).read_back_details()`), verifies relative date resolution ("next Tuesday", "tomorrow") against a fixed clock
+    (`expect(run).resolved_relative_date(fixed_clock=...)`), checks that internal prompt instructions were not spoken aloud
+    (`expect(run).no_spoken_leaks()`), and verifies that human handoffs carried a conversation summary (`expect(run).handoff_carried_summary()`).
+  - **Timing and platform metrics:** ingests call records from Retell, Vapi, and telephony platforms (`parse_call_record()`),
+    computing time to first response (`expect(run).voice_latency()`), overlapping speech talk-overs (`expect(run).no_talk_overs()`),
+    silence during hold (`expect(run).no_answers_during_hold()`), and cumulative dead air (`expect(run).max_dead_air()`).
+  - **Voice diff regressions:** compares runs across agent versions (`compare_voice_runs()`), flagging regressions such as
+    "stopped reading the time back" or "now answers during hold" in `assay changes`.
+- **Handoffs between agents: advice or a transfer:** explicit contracts, single ownership, permission containment, fact propagation, and hierarchical tree diffing:
+  - **Advice:** the agent asked for an opinion only reads (`read_only=True`). Any write, message sent, or action with an effect fails the case, and findings return to caller (`expect(run).advice_was_read_only()`).
+  - **Take over (Transfer):** the receiving agent explicitly states whether it accepted (`accepted=True` or `run.accept_handoff()`), the task has one owner after (the handing agent makes zero subsequent mutating actions), and unaccepted or unfinished tasks are flagged (`expect(run).transfer_was_accepted()`).
+  - **No permission by message:** actions are held to human-granted originating scope and approvals, narrowed to the task, never wider, preventing escalation or borrowing approvals (`expect(run).no_permission_escalation()`).
+  - **What was handed over:** required facts (customer, constraint, deadline) must not be dropped in the payload.
+  - **Diff visualization as one tree:** builds a hierarchical execution tree from `parent_run_id` and handoffs (`build_agent_tree()`, `render_agent_tree()`), and pinpoints architectural and action differences across versions (`diff_agent_trees()`) in `assay changes`.
+- **Replay recorded runs, decision by decision:** replaying historical runs step by step against a candidate model, prompt, or tool router:
+  - **Decision-by-decision simulation:** gives the new setup the recorded history up to each step and compares its next decision (the tool, its arguments, or stopping) with the recorded one (`replay_decision_by_decision()`).
+  - **No re-execution:** tools are not run again; recorded results are fed back into history so nothing is charged, sent, or deleted.
+  - **Divergence classification:** counts where decisions diverge, grouped by kind (`another_tool`, `different_args`, `stopped_early`, `went_further`).
+  - **Risk weighting:** divergences on tools that write, spend money, or alter state weigh more heavily (high risk) than reads (`write_spend_divergences` vs `read_divergences`: `expect(report).no_risky_divergences()`).
+  - **Scored against outcome and checks:** divergences scored against the original run's outcome and case checks (better, worse, or unclear).
+  - **Tool definitions drift:** runs whose tool definitions changed since they were recorded are detected (`check_tool_definitions_drift()`) and set apart in `runs_with_changed_tool_definitions`.
+- **The same model, served differently (self-hosted and open-weight models):** tracks serving infrastructure and attributes divergences:
+  - **Record the serving setup with each call:** records quantization (`int8`, `4-bit`, `fp16`), inference engine and version (`vLLM`, `llama.cpp`), hardware accelerator (`A100`, `H100`, `L40S`, `Apple Silicon`), and batch size with each model call (`ServingSetup`, `run.llm(..., serving=...)`, `expect(run).serving_matches()`).
+  - **Run the same cases on both setups:** compares test cases across two setups (`compare_serving_setups()`), reporting cost and latency differences (e.g. "4-bit saves 60% and changes these 3 cases"). Cases that were historically stable on the baseline and now differ are ranked first (`expect(report).no_stable_regressions()`).
+  - **Point to the first step that differs:** in an agent run, pinpoints the exact first call or action whose output changed between the two setups (`find_first_differing_step()`), isolating root causes from downstream cascade differences.
+- **Evidence diffs: the same answer, from different evidence:** attributes answers to evidence documents and records, detecting when an unchanged answer rested on a changed, superseded, or wrong-entity basis:
+  - **Decision provenance:** extracts complete evidentiary provenance (`DecisionProvenance`, `extract_decision_provenance(run)`) including retrieved fragments (`id`, `source`, `version`, `date`, `entity`), tool records, policy versions, and consulted entities.
+  - **Per-case evidence attribution & changed basis detection:** compares evidence between runs (`compare_case_evidence(base, cand, target_entity)`). Flags dropped, added, swapped, or superseded evidence. A changed basis under an unchanged answer is flagged as a high-priority finding (`is_changed_basis_finding=True`), not a pass.
+  - **Superseded knowledge base fragments & entity leakage:** fragments carry version and date metadata; `is_superseded()` detects when a candidate cited outdated or superseded policies. `no_wrong_entity_records` flags queries consulting another customer's or entity's records.
+  - **Fleet-wide reports & assertions:** `compare_evidence_diffs(base_runs, cand_runs)` computes summary diff reports, and `expect(run).no_changed_basis()`, `expect(run).no_superseded_evidence()`, and `expect(run).no_wrong_entity_records()` guard test suites. `evidence_diff` halts pull requests in `assay changes`.
+- **Retrieval on its own: two retrievers or rerankers, compared query by query:** scores retrievers and rerankers against relevance labels (qrels), detects regressions, and isolates root-cause dropouts across stages:
+  - **Query-by-query scoring & slicing:** scores queries with recall@k, MRR, and nDCG@k against ground-truth labels from Qrels or CSV files, split by slice tags (`recall_at_k`, `mrr`, `ndcg_at_k`, `Qrels`).
+  - **Configuration comparisons & significance testing:** compares baseline vs candidate configurations (`compare_retrieval()`), reporting regressions (found before, missed now), recoveries, and shared failures. Computes statistical significance with paired sign and t-tests (`paired_sign_test`, `paired_t_test`).
+  - **Label health audits before scoring:** checks for unlabeled retrieved documents (preventing missing judgments from unfairly penalizing better models), conflicting labels for the same query/document, and inconsistent scales (`check_labels()`, `LabelHealthReport`, `expect(report).labels_clean()`).
+  - **Stage dropout attribution:** traces intermediate pipeline stages (routing, dense/sparse candidate retrieval, metadata filtering, cross-encoder reranking) and reports missed documents at the exact stage they were lost (`attribute_dropout()`, `DropoutAttribution`).
+  - **Latency percentiles & quality parity:** records per-stage timings (embedding, search, fusing, reranking) and calculates p50, p95, and p99 latencies (`compute_percentiles()`, `TimingPercentiles`, `expect(report).latency_p95_below()`).
+  - **Conjunctive multi-passage evidence:** verifies "all the evidence, not some" for complex questions requiring multiple passages (`conjunctive_recall()`, `expect(report).all_conjunctive_evidence_retrieved()`).
+  - **Losses into tests & reviewer handoff page:** turns regressions into executable Assay test cases (`make_regression_tests()`, `expect(run).retrieval_meets_criterion()`) and generates publication-grade Markdown handoff pages for stakeholders (`generate_handoff_page()`). `retrieval_regression` halts pull requests in `assay changes`.
 
 ## Not planned
 
@@ -361,266 +490,9 @@ phase are marked there too.
 
 ## Not built yet
 
-- **Cross-cutting agent reliability scenarios:** turn the reliability checks below into reusable end-to-end cases that can run before a prompt, model, tool-router or orchestration change, and on a schedule. Each handoff has an explicit input/output contract, permission scope and owner; each run is checked for the right terminal state, not just the agent's claim that it succeeded. Inject timeouts, lost acknowledgements, crashes and duplicate deliveries, then verify the external state and side effects: no lost task, no duplicate charge or write, no action after a handoff, and no job marked complete while work remains. When a run fails, report the first broken transition and its downstream effects. Reuse the existing trajectory, `faults()`, `at_most_once()`, read-back, recovery and recorded-run replay mechanisms rather than building a separate tracing system or an autonomous reviewer agent. Promote reviewed production failures into permanent cases through [Learning from production](learning.md).
-
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send
   them to `POST /v1/ingest` directly, or use OpenTelemetry.
-- **The files that decide how tests run, guarded like the tests:** a coding agent told to make the
-  tests pass can leave every test file alone and change what runs them: a new `conftest.py` at the
-  root, `pytest.ini`, `[tool.pytest]` in `pyproject.toml`, a Jest or Vitest config or setup file,
-  the `test` script in `package.json`, the test command in CI. Today a test the base branch runs
-  that didn't run now fails the pull request, and assertions are compared with the base branch. Not
-  covered is a test that still runs but stops checking: a hook that rewrites a failure as a pass, a
-  fixture that swallows the error, an `assert` turned off. It should:
-  - **List a change to any of those files** in the guard, next to weakened assertions, with the
-    lines that changed, for a person to confirm.
-  - **Check results outside the test process:** the number of assertions that ran per test,
-    against the base branch, so a test that passes with none run is caught. A run whose results
-    Assay can't read from the tests themselves ends inconclusive, never passed on the exit code.
-  - **Count which flags get marked intended:** `assay.intended.toml` already keeps the reasons. Per
-    kind of flag, the share marked intended shows which ones people have learned to ignore, so they
-    get fixed or dropped before the rest stop being read.
-- **Errors a test logged and still passed:** an exception caught and logged, a fallback taken, a
-  warning about a missing field. The test passes, and the log line that says something broke goes
-  unread. Assay records what each test called and wrote, not what it logged. It should record the
-  errors and warnings logged during each test (Python `logging` and `warnings`, `console.error` and
-  `console.warn`), turned into templates so "user 1234 not found" and "user 5678 not found" are one,
-  with ids, numbers and personal data taken out. Compared with the base branch:
-  - **A template no test logged before** is listed with the tests that logged it and the changed
-    function it came from.
-  - **A familiar one, many times more often:** an error that was there before and now shows up in
-    many more tests counts too, since a new error and a rise in an old one are both regressions.
-  Templates logged on the base branch as well, at the same rate, are left out, so a noisy suite
-  isn't the report.
-- **Tests that reached something real:** tests fake tools one at a time, and the one nobody faked
-  runs for real. A coding agent's test copies files to the real backup server with `scp`, because
-  only `ssh` was faked, or a run of the new tests against the old code (to show they fail) calls
-  what the old code called. Assay records each test's outbound HTTP calls, not the rest. It should:
-  - **Record what else a test touched:** commands it started (`scp`, `rsync`, `psql`), connections
-    to hosts that aren't local, at the socket and not only HTTP, and files written outside the
-    repository and the test's temporary folders. Anything the base branch's tests didn't touch is
-    listed in the change report.
-  - **An opt-in offline mode** for the whole test process: connections are refused unless the
-    host is allowed, and writes outside the temporary folders fail. A fake someone forgot then
-    fails loudly instead of reaching the real system. It applies to every run Assay starts,
-    including a run against the base branch's code.
-- **Agent security: scope tests and security alerts.** An agent given credentials and a task can
-  still reach what it wasn't meant to, and the organizations it happened to often didn't notice.
-  Today a `never` contract, `must_not_call`, `must_get_approval_before`, the injection check and
-  the personal-data check catch it in tests, and recorded HTTP calls show a request made around
-  the tools. Production alerts watch rates over runs, which suits quality and is too slow for this.
-  - **A scope per case:** the tools an agent may call and the argument values they may take (this
-    customer's account, not any account), checked against the actual operation and parameters.
-    Anything else fails, including an HTTP call to a protected host made another way. Values are
-    compared after they're resolved, so `/reports/q3/../payroll`, a symlink or a glob can't pass for
-    the path the scope allows.
-  - **Fails closed:** `faults()` on the permission check (error, timeout) and a check that the
-    protected action didn't run anyway.
-  - **Probes:** cases that ask, or inject an instruction, for an out-of-scope action, so the
-    boundary is tested on every pull request rather than assumed.
-  - **Injected instructions that change a value, not the tool:** the injection check reads tool
-    and resource results and catches a call the injected text named, a broken contract, or a call
-    the case didn't expect. It misses two things. Retrieved documents aren't read, though a planted
-    document is the usual way in. And an expected call with a planted value passes: the right
-    `send_email`, to the attacker's address. Each argument should carry where its value came from
-    (the user, a trusted tool, or text the agent read), and a value that came only from untrusted
-    text and goes to an outside destination (an address, a URL, an account, an amount) is flagged.
-    One zero-width space or full-width letter inside "ignore all previous instructions" used to hide
-    it; text is now normalized first (built: Unicode compatibility forms, zero-width and invisible
-    characters removed, look-alike Cyrillic and Greek letters made Latin). An answer that embeds
-    a markdown image or link whose address carries data (`![x](https://host/?q=...)`) leaks it the
-    moment a chat window renders it, so that's flagged as data leaving.
-  - **Testing the gate itself:** teams put a policy gate in front of tool calls (allow, block, needs
-    approval). Keeping its policy right as it changes is the hard part: too strict and normal work
-    stops, too loose and attacks pass. Recording each gate decision with its reason and policy
-    version lets cases check it: attack cases must be blocked, normal ones allowed. The report
-    gives the share of normal calls blocked and attacks let through, per policy version, and what a
-    policy change moved.
-  - **Security flags on what agents access and run, in production:** people now approve almost
-    everything an agent asks, so a click can't be the safeguard. Assay already sees each tool
-    call, its arguments and the HTTP requests a run makes. It should flag the security-relevant
-    ones by itself, with no rules to write first, approved or not:
-    - **Secrets and credentials:** reading `.env`, keys, tokens, `~/.ssh`, cloud credentials, or a
-      secret appearing in a tool's arguments, result or the answer.
-    - **Destructive or irreversible actions:** deletes, drops, `rm -rf`, force pushes, payments,
-      refunds, emails to many people.
-    - **Privilege and reach:** `sudo`, permission changes, new users or keys, access to another
-      customer's records, a host outside the usual list, a download piped into a shell.
-    - **Data leaving:** personal data sent to a tool or host that doesn't need it.
-    Each flag names the run, the step, what it touched and why it matters, with its severity.
-    High severity alerts at once to Slack or a webhook (not after a rate moves, as quality alerts
-    do), grouped so one bad deploy is one alert. Flags a team marks as expected become the
-    allowed list; the rest become tests, so the same action is caught in CI before the next
-    deploy. The same flags apply to the coding agents that build the app, through their hooks.
-  - **What an agent could reach, and when that grows:** an agent's risk is everything its tools
-    allow, not only what it's meant to do, and that grows quietly, one integration at a time. Assay
-    records every tool an agent is offered, with its definition, but doesn't say what they reach. It
-    should sort each tool by what it can do (read, write, delete, spend money, send messages, call
-    outside hosts) and over what (this customer's records or any). Each agent gets one map of its
-    reach, next to what it actually used. A pull request that widens it is an item in the change
-    report: "the support agent gains `issue_refund` (spends money, any customer)". It isn't a
-    failure, because the change may be intended, but nobody approves it without seeing it.
-  - **Calls that go around the gateway:** an LLM gateway or agent gateway (LiteLLM, Portkey, an
-    internal proxy) only governs the calls that reach it. An agent with a provider key and network
-    access can call a model, an MCP server or a tool's API directly, and the gateway never sees it.
-    Assay records model calls and outbound HTTP, but not where a model call went: a call through
-    the gateway and one straight to `api.openai.com` look the same. It should:
-    - **Record each call's destination:** the host each model call, MCP request and tool call
-      went to.
-    - **Fail a test that goes around:** with the gateway named in `assay.toml`, a test whose code
-      calls a model provider, an MCP server or a governed tool's API directly fails, naming the
-      call and the line that made it. A new code path that skips the gateway is caught in the pull
-      request, not found later in the bill.
-    - **Count it in production:** direct calls per agent, as a security flag, with the share of
-      model calls and tool calls that went through the gateway.
-    Assay sees only the calls its SDK records in the app's own process. Traffic from another
-    process or runtime needs egress rules at the network, and the report says so instead of
-    claiming full coverage.
-  - **Whose access an agent uses, and when it drifts:** agents often run on the credentials of
-    the person who set them up, keep them across sessions, and have no identity or baseline of
-    their own, so identity and security tools see nothing unusual. Assay sees what each run did,
-    but not whose access it used. It should:
-    - **Record the identity behind each action:** the agent, its owner, the person or system that
-      asked, and the credential each tool call and HTTP request used. A run that acts with a
-      person's credentials on someone else's request, or with no owner on record, is flagged.
-    - **Keep a baseline per agent:** the tools, hosts, tables and kinds of records it normally
-      reaches, learned from its runs. The first time it reaches something new (a new host,
-      another customer's records, a write where it only read), that's an alert at once, not after
-      a rate moves. Volume counts too: an agent allowed to read the CRM that reads a thousand
-      customers for a one-customer task is draining it one permitted query at a time. Drift is measured against the agent's own history, so no rules come first.
-    - **Access held but not used:** the tools and scopes an agent is given against the ones it used
-      in the last 30 days, so access can be trimmed to what it does. An agent with no runs for a
-      while that still holds access, or whose owner no longer signs in to Assay, is listed for
-      review.
-    The number for a team: the share of agent actions with a known owner and an identity of their
-    own, and how many agents hold access they didn't use.
-  - **"What did this agent do, and who approved it?" in a minute:** each run is recorded, but
-    finding every action of one kind means opening runs one by one. Assay's own audit log covers
-    the people using Assay, not what agents did. It should answer by action: every refund over $100
-    this month, with the agent, who asked, who approved and how fast, the rule or contract that
-    allowed it, the evidence it rested on, and what happened after. The same view exports for
-    security, legal or finance as CSV and PDF, signed so an edit shows. The number for a team:
-    the time to answer that question, and the share of actions with a full record.
-  - **An approval the agent claimed, not one it was given:** `must_get_approval_before` accepts any
-    approval recorded in the run, whoever recorded it. An agent that writes its own approval, or
-    passes "trusted" or "approved_by: finance" in a tool's arguments, gets through. An approval
-    should record where it came from (the approval system, a person's decision, a signed record),
-    and only those count. A claim in the agent's own output or arguments never does, and probe cases
-    check it: an invoice that says "pre-approved" in its text must not get paid. An approval used
-    long after it was given, past the window the case allows, counts as none.
-  - **Approvals that are rubber stamps:** people approve almost everything an agent asks, so an
-    approval step can look safe while checking nothing. `run.approval()` records the action, the
-    decision and who, but not what the person was shown or how long they took. It should record
-    both (the arguments on screen, asked and decided times) and report, per approver and per
-    action: the approval rate, the median seconds to decide, risky actions approved in seconds,
-    an approval that doesn't match what then ran (approved a $40 refund, $400 went out), and
-    approved runs that broke a security rule anyway. In tests, a case where the person says no
-    checks the agent stops. The number for a team: the share of approvals that were real reviews.
-- **Voice and phone agents: the call, not just the booking:** most phone agents book the slot
-  when the caller plays along. They differ on what happens around it: hold, silence, being
-  interrupted, a caller who changes an answer. Simulated users (`simulate()`) test a conversation,
-  but only as text taking turns. They should be able to act like callers:
-  - **Caller moves:** go silent or put the agent on hold for a while, interrupt it mid-sentence,
-    correct an earlier answer ("actually, Thursday"), give two answers at once, ask for a person.
-  - **Checks on the outcome, not the transcript:** the booking holds the final, corrected
-    details, not the first ones. The agent read the time back. "Next Tuesday" resolved to the
-    right date against a fixed clock. Nothing from its instructions was spoken that the caller
-    shouldn't hear ("3:30 Pacific"). A handoff to a person carried the summary.
-  - **Timing, from the platform's own call record:** time to first response, gaps after a hold,
-    how often it talked over the caller, read from the transcript timings a voice platform gives
-    (Retell, Vapi and others send them), so the same cases compare two agents or two versions of
-    one.
-  Each failed call is a case that can be run again, and the diff says what changed between
-  versions: "stopped reading the time back", "now answers during hold".
-- **The same tool name on two MCP servers:** with many MCP servers behind one agent or gateway,
-  two of them can both offer `search`, and the client picks one without saying so. A wrong tool can
-  return a perfectly valid answer, so nothing else fails. Built: the flow and `assay diff` name a
-  tool by its server and name (`db.search`), so a call that moved to another server is a change of
-  its own. Not yet: contracts that name a tool by server, and a name offered by two servers in one
-  model call flagged as a collision.
-- **Handoffs between agents: advice or a transfer:** one agent asks another either for a second
-  opinion or to take over the next task. These are different promises, and a run records only
-  that a sub-agent ran (`parent_run_id`), not which was asked or what it was allowed to do. A
-  handoff should say which it is, and tests should check that each kept its promise:
-  - **Advice:** the agent asked for an opinion only reads. A write, a message sent or any other
-    action with an effect, in its run, fails the case, and its findings come back to the agent
-    that asked.
-  - **Take over:** the receiving agent says whether it accepted, and the task has one owner after:
-    the agent that handed it off doesn't keep acting on it, and a task handed off and never
-    accepted or finished is flagged, not lost.
-  - **No permission by message:** a request from another agent grants nothing a person didn't.
-    The receiving agent's actions are held to the scope and approvals the person gave the first
-    agent, narrowed to the task it was handed, never wider, and an approval doesn't carry over to a
-    task it wasn't given for.
-  - **What was handed over:** the facts the task needs (the customer, the constraint, the deadline)
-    are in what the first agent passed on, so a handoff that drops one is a finding, not a guess.
-  The diff shows a run with its sub-agents as one tree, so a change in who did what is visible.
-- **Replay recorded runs, decision by decision:** before switching a model, a prompt or a router
-  that picks tools, a team wants to know what it would have done on real traffic. Recorded runs
-  hold each step's input and each tool's result. Replaying one means giving the new setup the same
-  history up to a step and comparing its next decision (the tool, its arguments, or stopping) with
-  the recorded one. Tools aren't run again: the recorded results are fed back, so nothing is
-  charged, sent or deleted. The report counts where decisions diverge, grouped by kind (another
-  tool, other arguments, stopped early, went further), with each divergence scored against the
-  run's outcome and the case's checks: better, worse or unclear. A divergence on a tool that writes
-  or spends weighs more than one on a read. Runs whose tool definitions changed since they were
-  recorded are set apart, since their recorded results may no longer hold.
-- **The same model, served differently (self-hosted and open-weight models):** a team keeps the
-  model and changes how it runs: int8 or 4-bit instead of 16-bit weights, a new vLLM or llama.cpp
-  version, another GPU, a bigger batch. The weights' name is the same, so nothing in the run says
-  the model changed, yet outputs can, even at temperature 0. `settings` records temperature and
-  similar, not how the model was served. It should:
-  - **Record the serving setup with each call:** the quantization, the inference engine and its
-    version, the hardware, so a change to any of them shows as a cause like a new prompt or model.
-  - **Run the same cases on both setups:** the usual diff, case by case, with the cost and latency
-    of each next to it, so "4-bit saves 60% and changes these 3 cases" is one report. Cases that
-    gave the same answer every time on the old setup and now differ are listed first.
-  - **Point to the first step that differs:** in an agent run, the first call whose output changed
-    between the two setups, rather than every step after it.
-- **Evidence diffs: the same answer, from different evidence.** Two runs can both say "approved"
-  while the new one read an older policy, or the wrong customer's record. Each retrieved fragment
-  is recorded (id, source, score, whether it went into the prompt) and each tool call with its
-  result, but the diff compares the flow and the counts, not the evidence. It should say, per
-  case, which documents and records an answer rested on, and what changed against the baseline:
-  evidence dropped, added or swapped, a record of another entity. A changed basis under an
-  unchanged answer is a finding, not a pass. Fragments take a version and a date, so evidence that
-  was superseded shows as such. This is also the provenance for a decision: which policy version
-  and which records supported it.
-- **Retrieval on its own: two retrievers or rerankers, compared query by query:** swapping an
-  embedding model, a chunk size or a reranker changes what's retrieved before any answer changes.
-  Assay records each fragment a run retrieved but doesn't score retrieval against relevance
-  labels. It should:
-  - **Score each query** with recall@k, MRR and nDCG against labels (which documents answer which
-    query), read from a qrels or CSV file or given per case, and split by slice.
-  - **Compare two configurations on the same queries:** regressions (found before, missed now),
-    recoveries, and shared failures (missed by both), the way `assay diff` does for answers. A
-    paired test says whether the overall change is real, and the report names the queries behind it.
-  - **Check the labels before the scores:** a retrieved document with no label (a missing judgment
-    counted as wrong drags a better retriever down), the same document labelled two ways for one
-    query, and labels on different scales. Each says how many results it affects, so a team fixes
-    the labels instead of reading noise.
-  - **Time and quality on the same queries:** `run.retrieve()` records one start and end per
-    retrieval. Each stage should get its own time (embedding the query, each search, fusing,
-    reranking), so a search engine's speed isn't confused with the embedding model's. The
-    comparison shows p50, p95 and p99 next to recall for each configuration, with the filters the
-    app really uses (permissions, metadata) and at the concurrency it's run at, since a fast
-    median on an unfiltered index hides the slow tail.
-  - **Keep the evidence:** each finding links the query, both result lists and the labels, so
-    someone else can rerun it and get the same numbers.
-  - **Where the document dropped out:** a router, a filter or a cluster choice before the search
-    loses a document that nothing after it can bring back. Each stage's candidates are recorded,
-    and a missed document is reported at the stage that dropped it: routed to the wrong cluster,
-    filtered out, never in the candidates, or ranked too low.
-  - **All the evidence, not some:** a question that needs two passages, say the general rule and
-    an exception filed somewhere else, passes only when both are retrieved. Recall@k averages
-    over documents and hides it, so these cases are reported on their own.
-  - **Make the losses into tests:** each regression becomes a case with its success criterion
-    ("kb-12 in the top 5"), so the next change is held to it.
-  - **A handoff page:** the comparison, label problems and open regressions as one page for a
-    client, or a reviewer who approves the change. Rerun after a fix, it shows what moved.
-  It works from saved results, so a team can compare runs it already has without sharing its
-  index or rerunning anything.
 - **Embedding changes treated as data migrations (RAG):** if ingestion and queries quietly move to
   different embedding models, retrieval still returns neighbors, and the scores look like ordinary
   similarity. Assay records each fragment's id, source and score, but not what made its vector. It
@@ -721,11 +593,6 @@ phase are marked there too.
   cases: wrong sentences the loop let through, right ones it rejected, how often a retry was
   wrong again, and the time and cost added per error avoided. A loop that adds time and avoids
   nothing (a strong model with the source already in the prompt) shows as such.
-- **Citations the answer gives, checked:** faithfulness checks the judge's evidence against the
-  fragments, not the answer's own citations. A citation (a document, a page, a section) should
-  be checked against the source it names: that source exists, was retrieved, and says what the
-  sentence citing it says. A right claim with the wrong page fails as a wrong citation, not as
-  a wrong answer.
 - **A judge tested by taking the evidence away:** a judge given the question, a reference answer
   and the answer, but not what was retrieved, scores agreement with the reference and calls it
   faithfulness. Each judge-based check should be run once on a copy of a passing case with the
@@ -737,11 +604,6 @@ phase are marked there too.
   the settlement receipt. It uses a mocked facilitator or test payments, never real money by
   default. Price, status, schema and settlement then show in the case-level diff like any other
   change, and `at_most_once` already catches a payment repeated after a lost reply.
-- **The same request sent twice:** `faults(tool="lost")` and `expect(run).at_most_once()` catch an
-  agent that pays again after a lost reply. A client that sends the whole request again (a
-  double click, a webhook delivered twice) isn't simulated yet. A case should send it again and
-  expect the second delivery to change nothing, still answer success to the sender (a `409` makes
-  the sender retry, and the retries pile up), and be recorded as a duplicate.
 - **Done, proven from outside the agent:** browser and tool agents report success because the
   page changed, while the form was silently rejected or the session had expired. A success check
   today (`success=` in `simulate()`, or `run.state_of()`) reads what the run recorded, which is the

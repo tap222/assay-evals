@@ -544,9 +544,25 @@ def _item(x: dict) -> str:
 # list: what broke first, then what looks wrong, then what nothing checked. The verdict says
 # whether to merge; the first three items say what to look at; the rest is one line of counts.
 
-ORDER = ["regressed", "weakened", "new write", "untested, risky", "deploy", "changed", "untested", "expected value"]
-STOPS = {"regressed", "weakened"}  # what makes the verdict "not safe to merge"
-NOUN = {"regressed": ("regression", "regressions"), "weakened": ("weakened test", "weakened tests"),
+ORDER = ["security_violation", "identity_violation", "drift_alert", "decision_divergence", "evidence_diff", "retrieval_regression", "handoff_violation", "broken_transition", "voice_regression", "regressed", "weakened", "runner_config", "logged_error", "touched_real", "widened_reach", "unused_access", "serving_change", "new write", "handoff_diff", "untested, risky", "deploy", "changed", "untested", "expected value"]
+STOPS = {"security_violation", "identity_violation", "drift_alert", "decision_divergence", "evidence_diff", "retrieval_regression", "handoff_violation", "broken_transition", "voice_regression", "regressed", "weakened", "runner_config", "logged_error", "touched_real"}  # what makes the verdict "not safe to merge"
+NOUN = {"security_violation": ("security violation", "security violations"),
+        "identity_violation": ("identity violation", "identity violations"),
+        "drift_alert": ("runtime drift alert", "runtime drift alerts"),
+        "decision_divergence": ("decision divergence", "decision divergences"),
+        "evidence_diff": ("changed evidence basis", "changed evidence bases"),
+        "retrieval_regression": ("retrieval regression", "retrieval regressions"),
+        "unused_access": ("unused access alert", "unused access alerts"),
+        "serving_change": ("model serving change", "model serving changes"),
+        "handoff_violation": ("handoff contract violation", "handoff contract violations"),
+        "handoff_diff": ("multi-agent tree change", "multi-agent tree changes"),
+        "broken_transition": ("broken transition", "broken transitions"),
+        "voice_regression": ("voice regression", "voice regressions"),
+        "regressed": ("regression", "regressions"), "weakened": ("weakened test", "weakened tests"),
+        "runner_config": ("test runner configuration change", "test runner configuration changes"),
+        "logged_error": ("logged error regression", "logged error regressions"),
+        "touched_real": ("real system access", "real system accesses"),
+        "widened_reach": ("widened agent reach", "widened agent reach"),
         "new write": ("new write to check", "new writes to check"),
         "untested, risky": ("untested change", "untested changes"), "untested": ("untested change", "untested changes"),
         "deploy": ("unchecked deploy change", "unchecked deploy changes"),
@@ -574,10 +590,73 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
             case=e["name"])
     for f in w.weakening(weakened):
         add("weakened", w.describe(f))
+    for f in weakened:
+        if f.get("kind") == "runner_config":
+            add("runner_config", w.describe(f),
+                key=f"runner_config:{f['file']}:{f.get('lines_text', '')}")
+    for s in (run or {}).get("security_violations") or []:
+        add("security_violation", s["text"], detail=s.get("detail", ""),
+            key=s.get("key") or f"security:{s['text']}",
+            case=s.get("cases", [None])[0] if s.get("cases") else None)
+    for iv in (run or {}).get("identity_violations") or []:
+        add("identity_violation", iv["text"], detail=iv.get("detail", ""),
+            key=iv.get("key") or f"identity:{iv['text']}",
+            case=iv.get("cases", [None])[0] if iv.get("cases") else None)
+    for da in (run or {}).get("drift_alerts") or []:
+        add("drift_alert", da["text"], detail=da.get("detail", ""),
+            key=da.get("key") or f"drift:{da['text']}",
+            case=da.get("cases", [None])[0] if da.get("cases") else None)
+    for dd in (run or {}).get("decision_divergences") or []:
+        add("decision_divergence", dd["text"], detail=dd.get("detail", ""),
+            key=dd.get("key") or f"decision_divergence:{dd['text']}",
+            case=dd.get("cases", [None])[0] if dd.get("cases") else None)
+    for ed in (run or {}).get("evidence_diffs") or []:
+        add("evidence_diff", ed["text"], detail=ed.get("detail", ""),
+            key=ed.get("key") or f"evidence:{ed['text']}",
+            case=ed.get("cases", [None])[0] if ed.get("cases") else None)
+    for rr in (run or {}).get("retrieval_regressions") or []:
+        add("retrieval_regression", rr["text"], detail=rr.get("detail", ""),
+            key=rr.get("key") or f"retrieval:{rr['text']}",
+            case=rr.get("cases", [None])[0] if rr.get("cases") else None)
+    for hv in (run or {}).get("handoff_violations") or []:
+        add("handoff_violation", hv["text"], detail=hv.get("detail", ""),
+            key=hv.get("key") or f"handoff:{hv['text']}",
+            case=hv.get("cases", [None])[0] if hv.get("cases") else None)
+    for bt in (run or {}).get("broken_transitions") or []:
+        add("broken_transition", bt["text"], detail=bt.get("detail", ""),
+            key=bt.get("key") or f"transition:{bt['text']}",
+            case=bt.get("cases", [None])[0] if bt.get("cases") else None)
+    for vr in (run or {}).get("voice_regressions") or []:
+        add("voice_regression", vr["text"], detail=vr.get("detail", ""),
+            key=vr.get("key") or f"voice:{vr['text']}",
+            case=vr.get("cases", [None])[0] if vr.get("cases") else None)
+    for r in (run or {}).get("widened_reach") or []:
+        add("widened_reach", r["text"], detail=r.get("detail", ""),
+            key=r.get("key") or f"reach:{r['text']}",
+            case=r.get("cases", [None])[0] if r.get("cases") else None)
+    for ua in (run or {}).get("unused_access") or []:
+        add("unused_access", ua["text"], detail=ua.get("detail", ""),
+            key=ua.get("key") or f"access:{ua['text']}",
+            case=ua.get("cases", [None])[0] if ua.get("cases") else None)
+    for sc in (run or {}).get("serving_changes") or []:
+        add("serving_change", sc["text"], detail=sc.get("detail", ""),
+            key=sc.get("key") or f"serving:{sc['text']}",
+            case=sc.get("cases", [None])[0] if sc.get("cases") else None)
+    for e in (run or {}).get("logged_errors") or []:
+        add("logged_error", e["text"], detail=e.get("detail", ""),
+            key=e.get("key") or f"logged_error:{e['template']}", case=e.get("cases", [None])[0] if e.get("cases") else None)
+    for t in (run or {}).get("real_touches") or []:
+        add("touched_real", t["text"], detail=t.get("detail", ""),
+            key=t.get("key") or f"touched_real:{t['touch']}",
+            case=t.get("cases", [None])[0] if t.get("cases") else None)
     for c in (run or {}).get("write_checks") or []:
         names = c.get("names") or c.get("cases") or []
         add("new write", c["text"], key=f"write:{c['kind']}:{c['write']}:{c['field']}")
         out[-1]["cases"] = list(names)
+    for hd in (run or {}).get("handoff_diffs") or []:
+        add("handoff_diff", hd["text"], detail=hd.get("detail", ""),
+            key=hd.get("key") or f"handoff_diff:{hd['text']}",
+            case=hd.get("cases", [None])[0] if hd.get("cases") else None)
     for x in (d.get("untested") or {}).get("items", []):
         add("untested, risky" if x["risk"] else "untested", f"not run by any test: {_item(x)}",
             key=f"untested:{x['file']}:{x['function'] or ''}:{x.get('digest', '')}")
@@ -617,7 +696,23 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
 # ---------- marking an item intended ----------
 
 INTENDED = "assay.intended.toml"
-CAN_INTEND = {"new write", "untested, risky", "untested", "deploy", "changed", "expected value"}
+CAN_INTEND = {"runner_config", "logged_error", "touched_real", "widened_reach", "new write", "handoff_diff", "decision_divergence", "evidence_diff", "retrieval_regression", "serving_change", "untested, risky", "untested", "deploy", "changed", "expected value"}
+
+KEY_TO_KIND = {
+    "write": "new write",
+    "handoff_diff": "handoff_diff",
+    "decision_divergence": "decision_divergence",
+    "evidence_diff": "evidence_diff",
+    "retrieval": "retrieval_regression",
+    "serving_change": "serving_change",
+    "untested": "untested",
+    "deploy": "deploy",
+    "changed": "changed",
+    "expected": "expected value",
+    "runner_config": "runner_config",
+    "logged_error": "logged_error",
+    "touched_real": "touched_real",
+}
 
 
 def load_intended(root: Path) -> List[dict]:
@@ -636,11 +731,62 @@ def mark_intended(root: Path, item: dict, reason: str) -> Path:
     path = root / INTENDED
     head = "" if path.exists() else ("# Change-report items marked intended (`assay changes --intended N`). Each matches\n"
                                      "# only what was flagged then; a different change in the same place shows again.\n")
-    entry = (f"\n[[intended]]\nkey = {q(item['key'])}\nwhat = {q(item['text'])}\nby = {q(who())}\n"
+    entry = (f"\n[[intended]]\nkind = {q(item['kind'])}\nkey = {q(item['key'])}\nwhat = {q(item['text'])}\nby = {q(who())}\n"
              f"reason = {q(reason)}\non = {q(date.today().isoformat())}\n")
     with path.open("a", encoding="utf-8") as f:
         f.write(head + entry)
     return path
+
+
+def intended_stats(root: Path, current_items: Optional[List[dict]] = None) -> Dict[str, dict]:
+    """Counts which flags get marked intended and computes the share marked intended per kind.
+    Returns: {kind: {"intended": int, "active": int, "total": int, "share": float, "share_percent": str, "ignored": bool}}"""
+    intended_entries = load_intended(root)
+    counts: Dict[str, int] = {}
+    for entry in intended_entries:
+        kind = entry.get("kind")
+        if not kind:
+            prefix = (entry.get("key") or "").split(":", 1)[0]
+            kind = KEY_TO_KIND.get(prefix, prefix or "other")
+        counts[kind] = counts.get(kind, 0) + 1
+
+    active_counts: Dict[str, int] = {}
+    if current_items is not None:
+        marked_keys = {m.get("key") for m in intended_entries if m.get("key")}
+        for it in current_items:
+            k = it.get("kind")
+            if it.get("key") and it["key"] in marked_keys:
+                continue
+            active_counts[k] = active_counts.get(k, 0) + 1
+
+    all_kinds = sorted(set(list(counts.keys()) + list(active_counts.keys())))
+    out = {}
+    for k in all_kinds:
+        n_intended = counts.get(k, 0)
+        n_active = active_counts.get(k, 0)
+        total = n_intended + n_active
+        share = (n_intended / total) if total > 0 else 0.0
+        ignored = (total >= 2 and share >= 0.5)
+        out[k] = {
+            "intended": n_intended,
+            "active": n_active,
+            "total": total,
+            "share": round(share, 3),
+            "share_percent": f"{int(round(share * 100))}%",
+            "ignored": ignored,
+        }
+    return out
+
+
+def intended_stats_text(stats: Dict[str, dict]) -> str:
+    if not stats:
+        return "No items marked intended in assay.intended.toml."
+    lines = ["Intended flags by kind (share marked intended):"]
+    for kind, s in stats.items():
+        n_int, tot, pct = s["intended"], s["total"], s["share_percent"]
+        note = " (high ignore rate: consider fixing or dropping these checks)" if s.get("ignored") else ""
+        lines.append(f"  - {kind}: {n_int} of {tot} marked intended ({pct}){note}")
+    return "\n".join(lines)
 
 
 def verdict(found: List[dict]) -> str:
@@ -677,8 +823,10 @@ def report(root: Path, d: dict) -> dict:
     for x in found[SHOW:]:
         rest[x["kind"]] = rest.get(x["kind"], 0) + 1
     flaky = len((run or {}).get("flaky") or [])
+    stats = intended_stats(root, everything)
     return {"verdict": verdict(found), "items": found, "rest": rest, "flaky": flaky,
             "intended": len(everything) - len(found),
+            "intended_stats": stats,
             "run": None if run is None else {"current": run["current"]["label"], "baseline": run["baseline"]["label"],
                                              "scenarios": run["scenarios"]},
             "no_run": why if run is None else None, "changes": d}
@@ -742,9 +890,11 @@ def report_markdown(r: dict, limit: int = SHOW) -> str:
 
 
 def main(root: Path, base: Optional[str], coverage: Optional[str], fmt: str, show_all: bool,
-         intended: Optional[int] = None, reason: Optional[str] = None) -> int:
+         intended: Optional[int] = None, reason: Optional[str] = None,
+         show_intended_stats: bool = False) -> int:
     """`assay changes`: 0 with a report (nothing here fails), 2 when it can't run. With intended,
-    marks that item of the report (as `--all` numbers them) intended instead."""
+    marks that item of the report (as `--all` numbers them) intended instead. With show_intended_stats,
+    reports the share marked intended per kind."""
     import sys
     from assay import weakening
     ref = weakening.base_ref(root, base) if base or os.environ.get(weakening.BASE_ENV) else weakening.default_base(root)
@@ -763,6 +913,10 @@ def main(root: Path, base: Optional[str], coverage: Optional[str], fmt: str, sho
         return 2
     limit = 10 ** 9 if show_all else SHOW
     r = report(root, d)
+    if show_intended_stats:
+        stats = r.get("intended_stats") or intended_stats(root, r.get("items"))
+        print(json.dumps(stats, indent=2) if fmt == "json" else intended_stats_text(stats))
+        return 0
     if intended is not None:
         if not 1 <= intended <= len(r["items"]):
             print(f"There's no item {intended}: the report has {len(r['items'])} (`assay changes --all` numbers "

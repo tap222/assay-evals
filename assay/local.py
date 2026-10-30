@@ -56,7 +56,10 @@ CHECK_NAMES = {"plan_quality": "Plan quality", "consistency": "Consistency", "co
                "claimed_success": "Claimed success", "context_retention": "Context retention",
                "rewording": "Same behavior reworded", "document": "All fields correct",
                "expect.must_abstain()": "Says the sources don't answer",
-               "expect.must_not_abstain()": "Answers when the sources do"}
+               "expect.must_not_abstain()": "Answers when the sources do",
+               "expect.duplicate_safe()": "Duplicate request handled",
+               "expect.no_tool_collisions()": "No MCP tool collisions",
+               "expect.citations_valid()": "Citations match sources"}
 PII_EVALUATOR = "assay.pii@1"
 
 CLAUDE_SKILL = ".claude/skills/assay/SKILL.md"
@@ -1459,6 +1462,13 @@ def change_text(x: dict) -> str:
     if x["what"] == "settings":
         return "settings " + ", ".join(f"{k} {a if a is not None else '(unset)'} → {b if b is not None else '(unset)'}"
                                         for k, (a, b) in x["changed"].items())
+    if x["what"] == "serving":
+        parts = []
+        for k in ("engine", "quantization", "hardware", "batch_size", "kv_cache_dtype"):
+            if k in x.get("changed", {}):
+                a, b = x["changed"][k]
+                parts.append(f"{k} {a or '(default)'} → {b or '(default)'}")
+        return "serving " + (", ".join(parts) if parts else str(x.get("changed", "")))
     if x["what"] == "media":
         def m(v):
             if not v:
@@ -2765,7 +2775,7 @@ def guard_only(root: Path, home: Path) -> int:
     md = [MARKER, f"## {head}", "", "No Assay tests ran here, so the tests' assertions were checked against the "
           f"base branch ({_md(ref)}).", ""]
     for f in found:
-        verb = "changes" if f["kind"] == "rewritten" else "loosens"
+        verb = "changes" if f["kind"] in ("rewritten", "runner_config") else "loosens"
         md.append(f"- {verb}: {_md(weakening.describe(f))}")
     if code == 1 and not accepted:
         md += ["", "Fix the test, or add the `assay-policy-change` label to accept the change."]
@@ -2889,17 +2899,21 @@ def finish(root: Path, cfg: dict, run_id: str, repeat: int, codes: List[int], ba
     result["weakened_tests"] = found
     _save_meta(home, run_id, {"ran_by": ran_by(root), "weakened_tests": found})
     if found:
-        loose, notes = weakening.weakening(found), [f for f in found if f["kind"] == "rewritten"]
+        loose = weakening.weakening(found)
+        configs = [f for f in found if f.get("kind") == "runner_config"]
+        notes = [f for f in found if f.get("kind") == "rewritten"]
         if policy is not None:  # a PR: a weakened test loosens the checks like removing a contract
             policy = {**policy, "changes": [*policy["changes"],
                                             *({"text": weakening.describe(f), "weakens": True} for f in loose),
+                                            *({"text": weakening.describe(f), "weakens": True} for f in configs),
                                             *({"text": weakening.describe(f), "weakens": False, "note": True} for f in notes)]}
-            if loose:
+            if loose or configs:
                 policy["weakened"] = policy["weakened"] or not policy["accepted"]
         else:
             lines = [*(f"Weakened against {os.environ.get(weakening.BASE_ENV)}: {weakening.describe(f)}" for f in loose),
+                     *(f"Runner config changed: {weakening.describe(f)}" for f in configs),
                      *(f"Expected value changed: {weakening.describe(f)}" for f in notes)]
-            text += "\n" + _paint("\n".join(lines), "yellow" if loose else "dim")
+            text += "\n" + _paint("\n".join(lines), "yellow" if (loose or configs) else "dim")
     if not policy and not subset and abandoned_why is None:
         state["suite"] = sorted(ran_all)
     if policy_lines(policy):
@@ -2917,6 +2931,22 @@ def finish(root: Path, cfg: dict, run_id: str, repeat: int, codes: List[int], ba
     if checks:
         text += "\n" + _paint("\n".join([f"New writes to check ({len(checks)}):",
                                           *(f"  {x}" for x in diff.write_checks_lines(checks, _short))]), "yellow")
+    from assay.logged_errors import compare_logged_errors, logged_errors_by_case
+    now_logs = logged_errors_by_case(engine, TENANT, run_id)
+    base_logs = logged_errors_by_case(engine, TENANT, baseline) if baseline else {}
+    log_regressions = compare_logged_errors(now_logs, base_logs)
+    result["logged_errors"] = log_regressions
+    if log_regressions:
+        text += "\n" + _paint("\n".join([f"Logged error regressions ({len(log_regressions)}):",
+                                          *(f"  {x['text']}" for x in log_regressions)]), "yellow")
+    from assay.reach import compare_real_touches, real_touches_from_db
+    now_touches = real_touches_from_db(engine, TENANT, run_id)
+    base_touches = real_touches_from_db(engine, TENANT, baseline) if baseline else {}
+    new_real_touches = compare_real_touches(now_touches, base_touches)
+    result["real_touches"] = new_real_touches
+    if new_real_touches:
+        text += "\n" + _paint("\n".join([f"Reached something real ({len(new_real_touches)}):",
+                                          *(f"  {x['text']}" for x in new_real_touches)]), "yellow")
     if baseline:  # what each case did, next to what its baseline did
         before, now = flows_before, flows_now
         result["flows"] = {c: (before[c]["flow"], now[c]["flow"]) for c in before.keys() & now.keys()

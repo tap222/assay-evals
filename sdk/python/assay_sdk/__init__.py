@@ -38,7 +38,26 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-__all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correction", "expect", "prompt", "flush", "shutdown", "Run"]
+__all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correction", "expect", "prompt", "flush", "shutdown", "Run", "duplicate", "aduplicate", "DuplicateResult", "check_citations", "extract_citations", "Citation",
+           "Scope", "ScopeViolation", "PathWithin", "scope", "probe", "ProbeResult", "PolicyGate", "GateDecision", "PolicyGateReport", "evaluate_policy_gate", "scan_security_flags", "SecurityFlag", "check_gateway_bypass", "profile_agent_reach", "compare_agent_reach", "check_markdown_exfiltration", "check_untrusted_taint", "check_fails_closed",
+           "Scenario", "HandoffContract", "ScenarioResult", "BrokenTransition", "crash_at", "ProcessCrash", "validate_handoffs", "check_compensations", "find_first_broken_transition",
+           "AgentIdentity", "IdentityViolation", "DriftAlert", "AgentBaseline", "AccessAuditReport", "ActionAuditRecord",
+           "check_identity_violations", "compute_identity_metrics", "learn_agent_baseline", "detect_runtime_drift",
+           "audit_access_held", "audit_all_agents_access", "query_action_audit", "export_audit_csv",
+           "export_signed_audit", "verify_signed_audit", "detect_rubber_stamp_approvals", "hash_arguments",
+           "verify_approval_for_action", "check_self_claimed_approvals",
+           "CallerMove", "VoicePersona", "VoiceCallRecord", "VoiceTurn", "VoiceCallMetrics", "parse_call_record",
+           "compute_voice_call_metrics", "simulate_call", "resolve_relative_date", "check_read_back",
+           "check_booking_details", "check_spoken_leaks", "check_handoff_summary", "compare_voice_runs",
+           "AgentHandoffContract", "AgentTreeNode", "validate_agent_handoffs", "build_agent_tree", "render_agent_tree", "diff_agent_trees",
+           "Decision", "DecisionDivergence", "RunReplayResult", "ReplayReport", "classify_tool_risk", "check_tool_definitions_drift", "replay_decision_by_decision",
+           "ServingSetup", "StepDiff", "CaseServingDiff", "ServingDiffReport", "find_first_differing_step", "compare_serving_setups",
+           "EvidenceItem", "DecisionProvenance", "CaseEvidenceDiff", "EvidenceDiffReport", "is_superseded",
+           "extract_evidence_items", "extract_decision_provenance", "compare_case_evidence", "compare_evidence_diffs",
+           "Qrels", "LabelHealthReport", "DropoutAttribution", "QueryRetrievalResult", "QueryRegression",
+           "RetrievalComparisonReport", "TimingPercentiles", "check_labels", "recall_at_k", "mrr",
+           "ndcg_at_k", "conjunctive_recall", "attribute_dropout", "paired_sign_test", "paired_t_test",
+           "compute_percentiles", "extract_retrieval_results", "compare_retrieval"]
 __version__ = "0.5.0"
 
 log = logging.getLogger("assay_sdk")
@@ -288,6 +307,11 @@ def init(url: Optional[str] = None, key: Optional[str] = None, *, tenant: Option
         log.info("Assay: no server set (ASSAY_URL); recording to %s", path)
     _client = _Client(url or "http://localhost", key or os.environ.get("ASSAY_KEY"), tenant, redact, sample,
                       flush_interval, batch_size, max_queue, strict, transport, enabled)
+    try:
+        from assay_sdk.offline import record as record_offline
+        record_offline()
+    except Exception:
+        pass
 
 
 def _c() -> _Client:
@@ -311,6 +335,20 @@ class Run:
         self.expectations: List[Any] = []  # assay_sdk.testing.expect(run): checked when the test ends
         self.request: Any = None  # what the run was asked (input=): personal data it gave may be said back
         self.tool_schemas: Dict[str, dict] = {}  # the input schema of each tool a model was offered
+        self.tool_definitions: Optional[Any] = None
+        self.duplicate: bool = False  # True if this run is a duplicate delivery of a request
+        self.original_run_id: Optional[str] = None
+        self.task: Optional[str] = None
+        self.logged_errors: List[Dict[str, Any]] = []
+        self.scope_violations: List[Any] = []
+        self.agent_id: Optional[str] = None
+        self.owner: Optional[str] = None
+        self.requested_by: Optional[str] = None
+        self.credential: Optional[str] = None
+        self.credential_type: Optional[str] = None
+        self.credential_owner: Optional[str] = None
+        self.voice_call_record: Optional[Any] = None
+        self.serving: Optional[Any] = None
 
     def _case(self) -> Dict[str, Any]:
         if not self.test:
@@ -343,34 +381,54 @@ class Run:
             tools: Optional[List[Any]] = None, name: Optional[str] = None, finish_reason: Optional[str] = None,
             tool_calls: Optional[List[dict]] = None, tokens_cached: Optional[int] = None,
             tokens_reasoning: Optional[int] = None, context: Optional[Dict[str, int]] = None,
-            media: Optional[Dict[str, Any]] = None, settings: Optional[Dict[str, Any]] = None) -> None:
+            media: Optional[Dict[str, Any]] = None, settings: Optional[Dict[str, Any]] = None,
+            serving: Optional[Union[Dict[str, Any], Any]] = None) -> None:
         """A model call. prompt is "id@version"; text is the output (or a summary of it); tools are the
         tools the model was offered (names, or the tool definitions you passed the model). name: the
         step it belongs to, for a pipeline (the calls of a step are its cost and its models). Without
         cost_usd, the cost comes from ASSAY_PRICES ([prices] in assay.toml) when the model has one.
         context: what the input was made of, in tokens ({"system", "tools", "history", "user",
         "retrieved"}); media: images and video ({"images", "videos", "bytes", "size", "detail"});
-        settings: temperature, max_tokens, reasoning effort, ... assay.instrument() fills all three."""
+        settings: temperature, max_tokens, reasoning effort, ... assay.instrument() fills all three;
+        serving: quantization, inference engine, engine version, hardware accelerator, batch size."""
         if cost_usd is None and model and (tokens_in or tokens_out):
             from assay_sdk.runtime import env_prices, price_of
             p = price_of(env_prices(), model)
             if p:
                 cost_usd = round(((tokens_in or 0) * p[0] + (tokens_out or 0) * p[1]) / 1e6, 8)
-        from assay_sdk.checks import tool_schemas
+        from assay_sdk.checks import tool_collisions, tool_schemas
         schemas = {k: v for k, v in tool_schemas(tools).items() if self.tool_schemas.get(k) != v}
         self.tool_schemas.update(schemas)  # sent once per run and tool, not with every call
+        collisions = tool_collisions(tools)
+        collisions_list = [{"name": k, "servers": v} for k, v in collisions.items()] if collisions else None
+        serv = serving if serving is not None else getattr(self, "serving", None)
+        serv_dict = serv.to_dict() if hasattr(serv, "to_dict") else serv
         self._step("llm", started, name=name, finish_reason=finish_reason, tool_calls=self._c.clean(tool_calls),
-                   tool_schemas=schemas or None,
+                   tool_schemas=schemas or None, tool_collisions=collisions_list, raw_tools=self._c.clean(tools),
                    tokens_cached=tokens_cached, tokens_reasoning=tokens_reasoning, model=model, tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd,
                    prompt=prompt, text=self._c.clean(text), ended_at=_ts(ended),
                    status="error" if error else "ok", error=error, tools=_tool_names(tools),
-                   context=context, media=media, settings=settings)
+                   context=context, media=media, settings=settings, serving=serv_dict)
 
     def approval(self, action: str, decision: str = "approved", by: Optional[str] = None,
-                 reason: Optional[str] = None) -> None:
+                 reason: Optional[str] = None, server: Optional[str] = None,
+                 source: Optional[str] = None, arg_hash: Optional[str] = None,
+                 args: Optional[Dict[str, Any]] = None, time_to_approve_ms: Optional[float] = None,
+                 evidence: Optional[str] = None, rule: Optional[str] = None,
+                 started: Optional[datetime] = None) -> None:
         """A decision to allow an action, e.g. approval("refund", "approved", by="manager"). decision:
-        approved, rejected or pending. Contracts (requires_approval) and expect(run) check it."""
-        self._step("approval", name=action, decision=decision, by=by, text=self._c.clean(reason))
+        approved, rejected or pending. Supports server.action syntax or server=.
+        Contracts (requires_approval) and expect(run) check it."""
+        if "." in action and server is None:
+            server, action = action.split(".", 1)
+        from assay_sdk.llm import normalize_args
+        cleaned_args = self._c.clean(normalize_args(args)) if args is not None else None
+        if arg_hash is None and cleaned_args is not None:
+            from assay_sdk.production_security import hash_arguments
+            arg_hash = hash_arguments(cleaned_args)
+        self._step("approval", started, name=action, decision=decision, by=by, text=self._c.clean(reason),
+                   server=server, source=source, arg_hash=arg_hash, args=cleaned_args,
+                   time_to_approve_ms=time_to_approve_ms, evidence=evidence, rule=rule)
 
     def outcome(self, value: str) -> None:
         """Whether the run did what was asked: resolved, unresolved, or escalated (handed to a person)."""
@@ -378,12 +436,38 @@ class Run:
 
     def tool(self, name: str, args: Optional[Dict[str, Any]] = None, result: Any = None, error: Optional[str] = None,
              started: Optional[datetime] = None, ended: Optional[datetime] = None, server: Optional[str] = None,
-             fault: Optional[str] = None) -> None:
+             fault: Optional[str] = None, credential: Optional[str] = None, credential_type: Optional[str] = None,
+             credential_owner: Optional[str] = None, requested_by: Optional[str] = None,
+             agent: Optional[str] = None, agent_id: Optional[str] = None) -> None:
         """A tool call you've already made. server: the MCP server it went to, if any. fault: the fault
         assay.faults() injected in its place (empty, error, timeout, return)."""
+        if "." in name and server is None and not name.startswith(("HTTP ", "SOCKET ", "CMD ", "FILE ")):
+            server, name = name.split(".", 1)
         from assay_sdk.llm import normalize_args  # a JSON string, a list, a value: never rejected
-        self._step("tool", started, name=name, args=self._c.clean(normalize_args(args)), result=self._c.clean(result),
-                   ended_at=_ts(ended), status="error" if error else "ok", error=error, server=server, fault=fault)
+        cleaned_args = self._c.clean(normalize_args(args))
+        from assay_sdk.scopes import _current_scope
+        sc = _current_scope.get()
+        if sc is not None:
+            v = sc.check_call(name, cleaned_args, seq=len(self.steps))
+            if v:
+                self.scope_violations.extend(v)
+        cred = credential if credential is not None else getattr(self, "credential", None)
+        cred_type = credential_type if credential_type is not None else getattr(self, "credential_type", None)
+        cred_owner = credential_owner if credential_owner is not None else getattr(self, "credential_owner", None)
+        req_by = requested_by if requested_by is not None else getattr(self, "requested_by", None)
+        extra = {}
+        if agent or agent_id:
+            extra["agent"] = agent or agent_id
+        self._step("tool", started, name=name, args=cleaned_args, result=self._c.clean(result),
+                   ended_at=_ts(ended), status="error" if error else "ok", error=error, server=server, fault=fault,
+                   credential=cred, credential_type=cred_type, credential_owner=cred_owner, requested_by=req_by,
+                   **extra)
+
+    def gate(self, tool: str, decision: str, reason: str, policy_version: str = "v1",
+             args: Optional[Dict[str, Any]] = None) -> None:
+        """Record a policy gate decision (allow, block, needs_approval) in front of a tool call."""
+        self._step("approval", None, name=tool, decision=decision, error=reason if decision == "block" else None,
+                   args={"reason": reason, "policy_version": policy_version, **(args or {})})
 
     def resource(self, uri: str, contents: Any = None, server: Optional[str] = None, error: Optional[str] = None,
                  started: Optional[datetime] = None, ended: Optional[datetime] = None) -> None:
@@ -395,20 +479,28 @@ class Run:
     def retrieve(self, query: Any, fragments: Any, used: Any = None, name: str = "retrieve",
                  server: Optional[str] = None, error: Optional[str] = None,
                  started: Optional[datetime] = None, ended: Optional[datetime] = None,
-                 fault: Optional[str] = None) -> None:
+                 fault: Optional[str] = None,
+                 stages: Optional[List[Dict[str, Any]]] = None,
+                 timings: Optional[Dict[str, float]] = None,
+                 filters: Optional[Dict[str, Any]] = None,
+                 query_id: Optional[str] = None,
+                 slice: Optional[str] = None) -> None:
         """What a retrieval found and put into the prompt, e.g. retrieve(question, docs, used=4) for
         the top 4 after re-ranking. fragments: text, dicts (text, id, tokens, score, source),
         LangChain Documents or LlamaIndex nodes. used: which went into the prompt (None: all; an
         int: the first n; a list: ids or positions). Fragments per query, their tokens and their
         share of the prompt are compared with the baseline, and [behavior] limits apply to them.
-        fault: the fault assay.faults() injected in its place (empty, error, timeout, return)."""
+        fault: the fault assay.faults() injected in its place (empty, error, timeout, return).
+        stages: multi-stage candidate lists for dropout attribution.
+        timings: per-stage latencies in ms (embedding, search, fusing, reranking).
+        filters: query filters applied (permissions, tenant, metadata)."""
         from assay_sdk.retrieval import fragments as _fragments
         frags = [{**f, "text": self._c.clean(f["text"])} if f.get("text") else f
                  for f in _fragments(fragments, used)]
         self._step("retrieval", started, name=name[:128], query=self._c.clean(query if isinstance(query, str) else
                                                                           str(query))[:32768] if query is not None else None,
                    fragments=frags, server=server, ended_at=_ts(ended), status="error" if error else "ok", error=error,
-                   fault=fault)
+                   fault=fault, stages=stages, timings=timings, filters=filters, query_id=query_id, slice=slice)
 
     def search(self, name: str, fn: Callable, query: Any, *positional, used: Any = None, **args):
         """Call fn(query, *positional, **args), record what it returned as a retrieval named `name`
@@ -438,19 +530,63 @@ class Run:
         self._step("mcp_prompt", name=name, args=self._c.clean(args or {}), result=self._c.clean(messages),
                    server=server, status="error" if error else "ok", error=error)
 
-    def call(self, name: str, fn: Callable, *positional, **args):
+    def log(self, level: str, message: str, logger: Optional[str] = None, file: Optional[str] = None,
+            line: Optional[int] = None, function: Optional[str] = None,
+            started: Optional[datetime] = None) -> None:
+        """Record an error or warning logged during this run. Turned into a canonical template
+        (with IDs, numbers, and PII stripped) to detect regressions across test runs."""
+        from assay_sdk.logged_errors import template_log
+        tmpl = template_log(message)
+        lvl = str(level).upper()
+        entry = {
+            "level": lvl,
+            "message": message,
+            "template": tmpl,
+            "logger": logger or "",
+            "file": file,
+            "line": line,
+            "function": function,
+        }
+        self.logged_errors.append(entry)
+        self._step("log", started, name=logger or lvl, level=lvl,
+                   message=self._c.clean(message), template=tmpl, logger=logger or "",
+                   file=file, line=line, function=function,
+                   error=tmpl, text=self._c.clean(message))
+
+    def call(self, name: str, fn: Callable, *positional, server: Optional[str] = None, **args):
         """Call fn(*positional, **args), record it as a tool call (result or error, and timing), and
         return its result. Exceptions are recorded, then re-raised."""
+        if "." in name and server is None and not name.startswith(("HTTP ", "SOCKET ", "CMD ", "FILE ")):
+            server, name = name.split(".", 1)
         from assay_sdk.faults import call as fault_call, of as fault_of
+        from assay_sdk.scenarios import check_crash_point
+        check_crash_point(name, "before")
         started = datetime.now(timezone.utc)
         try:
             out, fault = fault_call(name, fn, positional, args)
         except Exception as e:
             self.tool(name, args, error=f"{type(e).__name__}: {e}"[:2000], started=started,
-                      ended=datetime.now(timezone.utc), fault=fault_of(e))
+                      ended=datetime.now(timezone.utc), server=server, fault=fault_of(e))
             raise
-        self.tool(name, args, out, started=started, ended=datetime.now(timezone.utc), fault=fault)
+        self.tool(name, args, out, started=started, ended=datetime.now(timezone.utc), server=server, fault=fault)
+        check_crash_point(name, "after")
         return out
+
+    def handoff(self, to_agent: str, kind: str = "transfer", payload: Optional[Dict[str, Any]] = None,
+                from_agent: Optional[str] = None, owner: Optional[str] = None,
+                accepted: Optional[bool] = None, allowed_tools: Optional[List[str]] = None,
+                allowed_approvals: Optional[List[str]] = None) -> None:
+        """Record an agent handoff (take over task or request advice)."""
+        self._step("stage", None, name=f"handoff:{to_agent}",
+                   args={"from": from_agent or getattr(self, "agent_name", "agent"),
+                         "to": to_agent, "kind": kind, "payload": payload or {}, "owner": owner,
+                         "accepted": accepted, "allowed_tools": allowed_tools,
+                         "allowed_approvals": allowed_approvals})
+
+    def accept_handoff(self, from_agent: str, accepted: bool = True, reason: Optional[str] = None) -> None:
+        """Record acceptance (or refusal) of a task transfer by the receiving agent."""
+        self._step("stage", None, name=f"handoff_accept:{from_agent}",
+                   args={"from": from_agent, "accepted": accepted, "reason": reason})
 
     def state(self, obj: str, op: str = "update", value: Any = None) -> None:
         """A change to the world, e.g. state("order:17", "update", {"qty": 3}). op: create, update, delete."""
@@ -468,9 +604,19 @@ class Run:
         """What the user said next, in a conversation recorded as one run (assay_sdk.simulate does it)."""
         self._step("user", text=self._c.clean(text))
 
-    def answer(self, text: str) -> None:
+    def answer(self, text: str, agent: Optional[str] = None) -> None:
         self.answer_text = text
-        self._step("answer", text=self._c.clean(text))
+        extra = {"agent": agent} if agent else {}
+        self._step("answer", text=self._c.clean(text), **extra)
+
+    def call_record(self, data: Dict[str, Any], platform: Optional[str] = None) -> None:
+        """Attach a voice platform call record (Retell, Vapi, or generic telephony) to this run."""
+        from dataclasses import asdict
+        from assay_sdk.voice import parse_call_record
+        rec = parse_call_record(data, platform=platform)
+        self.voice_call_record = rec
+        self._step("voice_call", None, call_id=rec.call_id, platform=rec.platform,
+                   metrics=asdict(rec.metrics) if hasattr(rec.metrics, "__dataclass_fields__") else rec.metrics)
 
     @contextmanager
     def stage(self, name: str, prompt: Optional[str] = None):
@@ -511,13 +657,20 @@ class _Stage:
 def run(task: Optional[str] = None, *, run_id: Optional[str] = None, kind: str = "agent", input: Any = None,
         input_ref: Optional[str] = None, version: Optional[Dict[str, str]] = None, segment: Optional[str] = None,
         test: Any = None, parent: Optional[Run] = None, tags: Optional[Dict[str, Any]] = None,
-        conversation: Optional[str] = None, turn: Optional[int] = None, user: Optional[str] = None):
+        conversation: Optional[str] = None, turn: Optional[int] = None, user: Optional[str] = None,
+        duplicate: Optional[bool] = None, original_run_id: Optional[str] = None,
+        agent_id: Optional[str] = None, owner: Optional[str] = None, requested_by: Optional[str] = None,
+        credential: Optional[str] = None, credential_type: Optional[str] = None,
+        credential_owner: Optional[str] = None, tool_definitions: Optional[Any] = None,
+        serving: Optional[Union[Dict[str, Any], Any]] = None):
     """Record one run. kind is "agent" (llm/tool/state/answer steps) or "pipeline" (stages).
     conversation="c-1", turn=2: this run is one turn of a conversation (turns from 0).
     user: who asked, as a pseudonymous id (a hash, not an email), so the same person asking again
     in a new conversation is seen.
     test="case-17" (or {"run": "nightly-0924", "case": "case-17", "attempt": 0}) marks a test-case run;
     under `assay test`, the run and attempt are filled in.
+    duplicate=True: a duplicate delivery of a previous request (webhooks, double clicks).
+    agent_id, owner, requested_by, credential: identity and credential tracking for production security.
     An exception inside the block ends the run as failed (and is re-raised)."""
     c = _c()
     rid = run_id or uuid.uuid4().hex
@@ -529,15 +682,33 @@ def run(task: Optional[str] = None, *, run_id: Optional[str] = None, kind: str =
     r = Run(c, rid, recorded)
     r.test = _test(test)
     r.request = input
+    r.task = task
+    r.duplicate = bool(duplicate) if duplicate is not None else False
+    r.original_run_id = original_run_id
+    r.tool_definitions = tool_definitions
+    r.serving = serving
+    r.agent_id = agent_id or task
+    r.owner = owner
+    r.requested_by = requested_by or user
+    r.credential = credential
+    r.credential_type = credential_type
+    r.credential_owner = credential_owner
     token = _current.set(r)  # assay.current(): what @assay.step, @assay.tool and assay.instrument() record into
     if recorded:
         c.emit({"type": "run.start", "run_id": rid, "kind": kind, "task": task, "segment": segment,
                 "input": c.clean(input), "input_ref": input_ref, "version": version, "test": r.test,
                 "parent_run_id": parent.id if parent else None, "tags": tags, "conversation_id": conversation,
-                "turn": turn, "user": None if user is None else str(user)[:128]})
+                "turn": turn, "user": None if user is None else str(user)[:128],
+                "duplicate": bool(duplicate) if duplicate is not None else None,
+                "original_run_id": original_run_id,
+                "agent_id": r.agent_id, "owner": owner, "requested_by": r.requested_by,
+                "credential": credential, "credential_type": credential_type,
+                "credential_owner": credential_owner})
+    from assay_sdk.logged_errors import capture_logs
     status, error = "completed", None
     try:
-        yield r
+        with capture_logs(r):
+            yield r
     except GeneratorExit:
         # Not from inside a `with` block: the run was dropped without being exited, so how it ended
         # is unknown. Leave it open; the server marks it abandoned once it goes quiet.
@@ -697,3 +868,143 @@ from assay_sdk.simulate import Persona, Simulation, load_personas, simulate  # n
 from assay_sdk.golden import golden_examples  # noqa: E402
 # Breaking tools on purpose, to test error handling (assay_sdk/faults.py).
 from assay_sdk.faults import REAL, ToolFault, faults  # noqa: E402
+# Simulating duplicate requests (webhooks, double clicks) to test idempotency (assay_sdk/duplicate.py).
+from assay_sdk.duplicate import DuplicateResult, aduplicate, duplicate  # noqa: E402
+# Checking citations in RAG answers (assay_sdk/citations.py).
+from assay_sdk.citations import Citation, check_citations, extract_citations  # noqa: E402
+# Opt-in offline mode and monitoring real resource access (assay_sdk/offline.py).
+from assay_sdk.offline import disable_offline, enable_offline, offline  # noqa: E402
+# Agent security scopes, fails-closed, probes, gates, taint, and flags (assay_sdk/scopes.py).
+from assay_sdk.scopes import (  # noqa: E402
+    GateDecision,
+    PathWithin,
+    PolicyGate,
+    PolicyGateReport,
+    ProbeResult,
+    Scope,
+    ScopeViolation,
+    SecurityFlag,
+    check_fails_closed,
+    check_gateway_bypass,
+    check_markdown_exfiltration,
+    check_untrusted_taint,
+    compare_agent_reach,
+    evaluate_policy_gate,
+    probe,
+    profile_agent_reach,
+    scan_security_flags,
+    scope,
+)
+# Cross-cutting agent reliability scenarios (assay_sdk/scenarios.py).
+from assay_sdk.scenarios import (  # noqa: E402
+    BrokenTransition,
+    HandoffContract,
+    ProcessCrash,
+    Scenario,
+    ScenarioResult,
+    check_compensations,
+    crash_at,
+    find_first_broken_transition,
+    validate_handoffs,
+)
+# Agent production security: identity, drift, access, and action audits (assay_sdk/production_security.py).
+from assay_sdk.production_security import (  # noqa: E402
+    AccessAuditReport,
+    ActionAuditRecord,
+    AgentBaseline,
+    AgentIdentity,
+    DriftAlert,
+    IdentityViolation,
+    audit_access_held,
+    audit_all_agents_access,
+    check_identity_violations,
+    check_self_claimed_approvals,
+    compute_identity_metrics,
+    detect_rubber_stamp_approvals,
+    detect_runtime_drift,
+    export_audit_csv,
+    export_signed_audit,
+    hash_arguments,
+    learn_agent_baseline,
+    query_action_audit,
+    verify_approval_for_action,
+    verify_signed_audit,
+)
+# Voice and phone agents (assay_sdk/voice.py).
+from assay_sdk.voice import (  # noqa: E402
+    CallerMove,
+    VoiceCallMetrics,
+    VoiceCallRecord,
+    VoicePersona,
+    VoiceTurn,
+    check_booking_details,
+    check_handoff_summary,
+    check_read_back,
+    check_spoken_leaks,
+    compare_voice_runs,
+    compute_voice_call_metrics,
+    parse_call_record,
+    resolve_relative_date,
+    simulate_call,
+)
+# Multi-agent handoff contracts, single ownership, permission containment, and tree diffs (assay_sdk/handoffs.py).
+from assay_sdk.handoffs import (  # noqa: E402
+    AgentHandoffContract,
+    AgentTreeNode,
+    build_agent_tree,
+    diff_agent_trees,
+    render_agent_tree,
+    validate_agent_handoffs,
+)
+# Replay recorded runs decision by decision (assay_sdk/replay.py).
+from assay_sdk.replay import (  # noqa: E402
+    Decision,
+    DecisionDivergence,
+    ReplayReport,
+    RunReplayResult,
+    check_tool_definitions_drift,
+    classify_tool_risk,
+    replay_decision_by_decision,
+)
+# Model serving setups and serving diffs (assay_sdk/serving.py).
+from assay_sdk.serving import (  # noqa: E402
+    CaseServingDiff,
+    ServingDiffReport,
+    ServingSetup,
+    StepDiff,
+    compare_serving_setups,
+    find_first_differing_step,
+)
+# Evidence diffs and decision provenance (assay_sdk/evidence.py).
+from assay_sdk.evidence import (  # noqa: E402
+    CaseEvidenceDiff,
+    DecisionProvenance,
+    EvidenceDiffReport,
+    EvidenceItem,
+    compare_case_evidence,
+    compare_evidence_diffs,
+    extract_decision_provenance,
+    extract_evidence_items,
+    is_superseded,
+)
+# Retrieval evaluation and query-by-query comparison (assay_sdk/retrieval_eval.py).
+from assay_sdk.retrieval_eval import (  # noqa: E402
+    DropoutAttribution,
+    LabelHealthReport,
+    Qrels,
+    QueryRegression,
+    QueryRetrievalResult,
+    RetrievalComparisonReport,
+    TimingPercentiles,
+    attribute_dropout,
+    check_labels,
+    compare_retrieval,
+    compute_percentiles,
+    conjunctive_recall,
+    extract_retrieval_results,
+    mrr,
+    ndcg_at_k,
+    paired_sign_test,
+    paired_t_test,
+    recall_at_k,
+)

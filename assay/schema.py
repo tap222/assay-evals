@@ -70,6 +70,14 @@ class RunStart(_E):
     turn: Optional[int] = Field(None, ge=0, description="This run's place in the conversation, from 0")
     user: Optional[str] = Field(None, max_length=128, description="Who asked, as a pseudonymous id: the same "
                                 "person asking again in a new conversation is a sign the first answer didn't do")
+    duplicate: Optional[bool] = Field(None, description="True if this request was delivered again as a duplicate (double click, retried webhook)")
+    original_run_id: Optional[str] = Field(None, max_length=128, description="The original run_id if this run was delivered as a duplicate")
+    agent_id: Optional[str] = Field(None, max_length=128, description="The identity of the agent performing this run")
+    owner: Optional[str] = Field(None, max_length=128, description="The team or user owning/responsible for this agent")
+    requested_by: Optional[str] = Field(None, max_length=128, description="The person or system who initiated this request")
+    credential: Optional[str] = Field(None, max_length=128, description="The credential used for this run")
+    credential_type: Optional[str] = Field(None, max_length=64, description="Type of credential (user_oauth, service_account, api_key)")
+    credential_owner: Optional[str] = Field(None, max_length=128, description="The person whose credential is being delegated/used")
 
 
 class Step(_E):
@@ -77,12 +85,20 @@ class Step(_E):
     run_id: str = Field(..., max_length=128)
     seq: int = Field(..., ge=0)
     kind: Literal["llm", "tool", "state", "answer", "stage", "approval", "resource", "mcp_prompt", "plan",
-                  "retrieval", "user"]
+                  "retrieval", "user", "log", "voice_call"]
     name: Optional[str] = Field(None, max_length=128)
     parent_seq: Optional[int] = Field(None, ge=0)
     ended_at: Optional[datetime] = None
     status: Literal["ok", "error"] = "ok"
     error: Optional[str] = Field(None, max_length=2048)
+    # log
+    level: Optional[str] = Field(None, max_length=16)
+    message: Optional[str] = Field(None, max_length=4096)
+    template: Optional[str] = Field(None, max_length=4096)
+    logger: Optional[str] = Field(None, max_length=256)
+    file: Optional[str] = Field(None, max_length=512)
+    line: Optional[int] = Field(None, ge=0)
+    function: Optional[str] = Field(None, max_length=256)
     # llm
     model: Optional[str] = Field(None, max_length=128)
     tokens_in: Optional[int] = Field(None, ge=0)
@@ -100,6 +116,8 @@ class Step(_E):
                                                                           "content_filter or error")
     tool_calls: Optional[List[Dict[str, Any]]] = Field(None, max_length=200, description="llm: the tool calls the "
                                                                                           "model asked for")
+    tool_collisions: Optional[List[Dict[str, Any]]] = Field(None, description="llm: colliding tool names offered by multiple MCP servers")
+    raw_tools: Optional[List[Any]] = Field(None, description="llm: raw tool definitions offered to the model")
     tokens_cached: Optional[int] = Field(None, ge=0)
     tokens_reasoning: Optional[int] = Field(None, ge=0)
     context: Optional[Dict[str, int]] = Field(None, description='llm: what the input was made of, in tokens: '
@@ -121,6 +139,11 @@ class Step(_E):
     query: Optional[str] = Field(None, max_length=32768)
     fragments: Optional[List[Dict[str, Any]]] = Field(
         None, max_length=1000, description='retrieval: [{"id", "tokens", "used", "score", "source", "text"}]')
+    stages: Optional[List[Dict[str, Any]]] = Field(None, max_length=50, description="retrieval: intermediate pipeline stages")
+    timings: Optional[Dict[str, float]] = Field(None, description="retrieval: stage durations in ms")
+    filters: Optional[Dict[str, Any]] = Field(None, description="retrieval: filters applied to query")
+    query_id: Optional[str] = Field(None, max_length=128, description="retrieval: query id")
+    slice: Optional[str] = Field(None, max_length=128, description="retrieval: query slice or tag")
     # state
     op: Optional[Literal["create", "update", "delete"]] = None
     value: Optional[Any] = None
@@ -130,6 +153,20 @@ class Step(_E):
     # approval: name is the action, e.g. refund; text is the reason
     decision: Optional[Literal["approved", "rejected", "pending"]] = None
     by: Optional[str] = Field(None, max_length=128, description="approval: who decided (a person, a policy)")
+    source: Optional[str] = Field(None, max_length=64, description="approval: origin of approval (e.g. human, approval_system)")
+    arg_hash: Optional[str] = Field(None, max_length=64, description="approval: bound hash of arguments")
+    time_to_approve_ms: Optional[float] = Field(None, ge=0, description="approval: time taken to approve in ms")
+    rule: Optional[str] = Field(None, max_length=256, description="approval: policy rule or contract permitting action")
+    evidence: Optional[str] = Field(None, max_length=4096, description="approval: evidence or context supporting approval")
+    # identity & credentials
+    credential: Optional[str] = Field(None, max_length=128, description="The credential used for this step")
+    credential_type: Optional[str] = Field(None, max_length=64, description="Type of credential (user_oauth, service_account, api_key)")
+    credential_owner: Optional[str] = Field(None, max_length=128, description="The person whose credential is being used")
+    requested_by: Optional[str] = Field(None, max_length=128, description="The person or system who initiated this request")
+    # voice call
+    call_id: Optional[str] = Field(None, max_length=128, description="voice: platform call id")
+    platform: Optional[str] = Field(None, max_length=64, description="voice: platform name (retell, vapi, bland)")
+    metrics: Optional[Dict[str, Any]] = Field(None, description="voice: call timing metrics")
 
     @field_validator("args", mode="before")
     @classmethod
@@ -163,12 +200,12 @@ class Step(_E):
                    "tool": {"args", "result", "server"}, "state": {"op", "value"}, "answer": {"text"},
                    "stage": {"outputs", "did_work", "prompt"}, "approval": {"decision", "by", "text"},
                    "resource": {"uri", "result", "server"}, "mcp_prompt": {"args", "result", "server"},
-                   "plan": {"plan", "text"}, "retrieval": {"query", "fragments", "server"},
+                   "plan": {"plan", "text"}, "retrieval": {"query", "fragments", "server", "stages", "timings", "filters", "query_id", "slice"},
                    "user": {"text"}}[self.kind]
         specific = {"model", "tokens_in", "tokens_out", "cost_usd", "prompt", "text", "args", "result", "op",
                     "value", "outputs", "did_work", "tools", "decision", "by", "server", "uri", "plan",
                     "finish_reason", "tool_calls", "tokens_cached", "tokens_reasoning", "query", "fragments",
-                    "context", "media", "settings"}
+                    "context", "media", "settings", "stages", "timings", "filters", "query_id", "slice"}
         wrong = [f for f in specific - allowed if getattr(self, f) is not None]
         if wrong:
             raise ValueError(f"a {self.kind} step doesn't take {', '.join(sorted(wrong))}")
@@ -398,7 +435,8 @@ def ingest(engine: Engine, events: List[BaseModel], tenant: str) -> Dict[str, in
                         "tenant": tenant, "trajectory_id": e.run_id, "seq": e.seq,
                         "kind": "reason" if e.kind == "llm" else e.kind,
                         "name": e.name or (e.uri[:128] if e.kind == "resource" else None),
-                        "args": {"op": e.op or "update"} if e.kind == "state" else
+                        "args": {"level": e.level, "template": e.template, "file": e.file, "line": e.line, "function": e.function} if e.kind == "log" else
+                        {"op": e.op or "update"} if e.kind == "state" else
                         {"decision": e.decision, "by": e.by} if e.kind == "approval" else
                         {"uri": e.uri} if e.kind == "resource" else
                         {"steps": e.plan} if e.kind == "plan" else
@@ -407,8 +445,9 @@ def ingest(engine: Engine, events: List[BaseModel], tenant: str) -> Dict[str, in
                         "finish_reason": e.finish_reason, "tool_calls": e.tool_calls, "tokens_cached": e.tokens_cached,
                         "tokens_reasoning": e.tokens_reasoning, "context": e.context, "media": e.media,
                         "settings": e.settings, "tool_schemas": e.tool_schemas, "fault": e.fault,
-                        "result": e.value if e.kind == "state" else e.fragments if e.kind == "retrieval" else e.result,
-                        "error": e.error if e.status == "error" else None, "text": e.text, "model": e.model,
+                        "result": {"template": e.template} if e.kind == "log" else (e.value if e.kind == "state" else e.fragments if e.kind == "retrieval" else e.result),
+                        "error": (e.template or e.message) if e.kind == "log" else (e.error if e.status == "error" else None),
+                        "text": e.message if e.kind == "log" else e.text, "model": e.model,
                         "tokens": tokens or None, "cost_usd": e.cost_usd, "started_at": e.ts,
                         "finished_at": e.ended_at, "parent_seq": e.parent_seq})
             elif isinstance(e, RunEnd):
