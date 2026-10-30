@@ -1157,6 +1157,89 @@ class Expectations:
 
         return self._add("no_wrong_entity_records", check)
 
+    def no_retrieval_regressions(self, max_regressions: int = 0, report: Optional[Any] = None) -> "Expectations":
+        """Expect at most max_regressions queries performing worse than baseline."""
+        def check():
+            target_report = report if report is not None else getattr(self.run, "retrieval_report", self.run)
+            if hasattr(target_report, "regressions"):
+                reg_count = len(target_report.regressions)
+                if reg_count > max_regressions:
+                    qids = [r.query_id for r in target_report.regressions[:5]]
+                    return f"{reg_count} query retrieval regression(s) (max allowed: {max_regressions}): {', '.join(qids)}"
+            return None
+
+        return self._add(f"no_retrieval_regressions({max_regressions})", check)
+
+    def recall_improved_or_equal(self, min_delta: float = 0.0, report: Optional[Any] = None) -> "Expectations":
+        """Expect that candidate recall@k improved or maintained baseline recall (delta >= min_delta)."""
+        def check():
+            target_report = report if report is not None else getattr(self.run, "retrieval_report", self.run)
+            if hasattr(target_report, "baseline_metrics") and hasattr(target_report, "candidate_metrics"):
+                base_r = target_report.baseline_metrics.get("recall@k", 0.0)
+                cand_r = target_report.candidate_metrics.get("recall@k", 0.0)
+                delta = cand_r - base_r
+                if delta < min_delta - 1e-6:
+                    return f"Recall delta {delta:+.4f} is below required min_delta {min_delta:+.4f} ({base_r:.4f} -> {cand_r:.4f})"
+            return None
+
+        return self._add(f"recall_improved_or_equal({min_delta})", check)
+
+    def latency_p95_below(self, max_ms: float, stage: str = "total", report: Optional[Any] = None) -> "Expectations":
+        """Expect that candidate retrieval p95 latency is at or below max_ms."""
+        def check():
+            target_report = report if report is not None else getattr(self.run, "retrieval_report", self.run)
+            if hasattr(target_report, "candidate_timings"):
+                timings = target_report.candidate_timings.get(stage)
+                if timings and timings.p95 > max_ms:
+                    return f"Candidate {stage} p95 latency {timings.p95:.1f}ms exceeds max allowed {max_ms:.1f}ms"
+            return None
+
+        return self._add(f"latency_p95_below({stage}={max_ms}ms)", check)
+
+    def labels_clean(self, report: Optional[Any] = None) -> "Expectations":
+        """Expect that ground-truth relevance labels are clean without unlabeled docs or conflicts."""
+        def check():
+            target_report = report if report is not None else getattr(self.run, "retrieval_report", self.run)
+            lh = getattr(target_report, "label_health", target_report)
+            if hasattr(lh, "is_clean") and not lh.is_clean:
+                return lh.summary()
+            return None
+
+        return self._add("labels_clean", check)
+
+    def all_conjunctive_evidence_retrieved(self, report: Optional[Any] = None) -> "Expectations":
+        """Expect all conjunctive evidence queries retrieved all required passages ('all the evidence, not some')."""
+        def check():
+            target_report = report if report is not None else getattr(self.run, "retrieval_report", self.run)
+            if hasattr(target_report, "conjunctive_failures"):
+                if target_report.conjunctive_failures:
+                    qids = [f.get("query_id") for f in target_report.conjunctive_failures[:5]]
+                    return f"{len(target_report.conjunctive_failures)} conjunctive query failure(s): {', '.join(qids)}"
+            return None
+
+        return self._add("all_conjunctive_evidence_retrieved", check)
+
+    def retrieval_meets_criterion(self, target_doc: str, max_rank: int = 5) -> "Expectations":
+        """Expect that target_doc was retrieved in the run's fragments at rank <= max_rank."""
+        def check():
+            from assay_sdk.testing import _retrievals
+            rets = _retrievals(self.run)
+            found_ranks = []
+            for s in rets:
+                frags = s.get("fragments") or []
+                for i, f in enumerate(frags, start=1):
+                    did = f.get("id") if isinstance(f, dict) else str(f)
+                    if did == str(target_doc):
+                        found_ranks.append(i)
+            if not found_ranks:
+                return f"Target document {target_doc!r} was not retrieved in any retrieval step"
+            best_rank = min(found_ranks)
+            if best_rank > max_rank:
+                return f"Target document {target_doc!r} best rank #{best_rank} exceeded max allowed #{max_rank}"
+            return None
+
+        return self._add(f"retrieval_meets_criterion({target_doc} in top {max_rank})", check)
+
     def failures(self) -> List[str]:
         """Every expectation that doesn't hold, as "name: why"."""
         out = []
@@ -1300,3 +1383,19 @@ def assert_no_wrong_entity_records(report: Any) -> None:
 
 def assert_evidence_parity(report: Any) -> None:
     expect(report).no_changed_basis(report=report).no_superseded_evidence(report=report).no_wrong_entity_records(report=report).verify()
+
+
+def assert_no_retrieval_regressions(report: Any, max_regressions: int = 0) -> None:
+    expect(report).no_retrieval_regressions(max_regressions=max_regressions, report=report).verify()
+
+
+def assert_retrieval_parity(report: Any, min_delta: float = 0.0) -> None:
+    expect(report).recall_improved_or_equal(min_delta=min_delta, report=report).verify()
+
+
+def assert_labels_clean(report: Any) -> None:
+    expect(report).labels_clean(report=report).verify()
+
+
+def assert_retrieval_latency(report: Any, max_p95_ms: float, stage: str = "total") -> None:
+    expect(report).latency_p95_below(max_ms=max_p95_ms, stage=stage, report=report).verify()

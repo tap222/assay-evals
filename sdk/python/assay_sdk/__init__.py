@@ -53,7 +53,11 @@ __all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correc
            "Decision", "DecisionDivergence", "RunReplayResult", "ReplayReport", "classify_tool_risk", "check_tool_definitions_drift", "replay_decision_by_decision",
            "ServingSetup", "StepDiff", "CaseServingDiff", "ServingDiffReport", "find_first_differing_step", "compare_serving_setups",
            "EvidenceItem", "DecisionProvenance", "CaseEvidenceDiff", "EvidenceDiffReport", "is_superseded",
-           "extract_evidence_items", "extract_decision_provenance", "compare_case_evidence", "compare_evidence_diffs"]
+           "extract_evidence_items", "extract_decision_provenance", "compare_case_evidence", "compare_evidence_diffs",
+           "Qrels", "LabelHealthReport", "DropoutAttribution", "QueryRetrievalResult", "QueryRegression",
+           "RetrievalComparisonReport", "TimingPercentiles", "check_labels", "recall_at_k", "mrr",
+           "ndcg_at_k", "conjunctive_recall", "attribute_dropout", "paired_sign_test", "paired_t_test",
+           "compute_percentiles", "extract_retrieval_results", "compare_retrieval"]
 __version__ = "0.5.0"
 
 log = logging.getLogger("assay_sdk")
@@ -475,20 +479,28 @@ class Run:
     def retrieve(self, query: Any, fragments: Any, used: Any = None, name: str = "retrieve",
                  server: Optional[str] = None, error: Optional[str] = None,
                  started: Optional[datetime] = None, ended: Optional[datetime] = None,
-                 fault: Optional[str] = None) -> None:
+                 fault: Optional[str] = None,
+                 stages: Optional[List[Dict[str, Any]]] = None,
+                 timings: Optional[Dict[str, float]] = None,
+                 filters: Optional[Dict[str, Any]] = None,
+                 query_id: Optional[str] = None,
+                 slice: Optional[str] = None) -> None:
         """What a retrieval found and put into the prompt, e.g. retrieve(question, docs, used=4) for
         the top 4 after re-ranking. fragments: text, dicts (text, id, tokens, score, source),
         LangChain Documents or LlamaIndex nodes. used: which went into the prompt (None: all; an
         int: the first n; a list: ids or positions). Fragments per query, their tokens and their
         share of the prompt are compared with the baseline, and [behavior] limits apply to them.
-        fault: the fault assay.faults() injected in its place (empty, error, timeout, return)."""
+        fault: the fault assay.faults() injected in its place (empty, error, timeout, return).
+        stages: multi-stage candidate lists for dropout attribution.
+        timings: per-stage latencies in ms (embedding, search, fusing, reranking).
+        filters: query filters applied (permissions, tenant, metadata)."""
         from assay_sdk.retrieval import fragments as _fragments
         frags = [{**f, "text": self._c.clean(f["text"])} if f.get("text") else f
                  for f in _fragments(fragments, used)]
         self._step("retrieval", started, name=name[:128], query=self._c.clean(query if isinstance(query, str) else
                                                                           str(query))[:32768] if query is not None else None,
                    fragments=frags, server=server, ended_at=_ts(ended), status="error" if error else "ok", error=error,
-                   fault=fault)
+                   fault=fault, stages=stages, timings=timings, filters=filters, query_id=query_id, slice=slice)
 
     def search(self, name: str, fn: Callable, query: Any, *positional, used: Any = None, **args):
         """Call fn(query, *positional, **args), record what it returned as a retrieval named `name`
@@ -974,4 +986,25 @@ from assay_sdk.evidence import (  # noqa: E402
     extract_decision_provenance,
     extract_evidence_items,
     is_superseded,
+)
+# Retrieval evaluation and query-by-query comparison (assay_sdk/retrieval_eval.py).
+from assay_sdk.retrieval_eval import (  # noqa: E402
+    DropoutAttribution,
+    LabelHealthReport,
+    Qrels,
+    QueryRegression,
+    QueryRetrievalResult,
+    RetrievalComparisonReport,
+    TimingPercentiles,
+    attribute_dropout,
+    check_labels,
+    compare_retrieval,
+    compute_percentiles,
+    conjunctive_recall,
+    extract_retrieval_results,
+    mrr,
+    ndcg_at_k,
+    paired_sign_test,
+    paired_t_test,
+    recall_at_k,
 )

@@ -614,6 +614,42 @@ expect(cand_run).no_superseded_evidence(base_run)
 expect(cand_run).no_wrong_entity_records(target_entity="cust_123")
 ```
 
+### Retrieval on its own: two retrievers or rerankers, compared query by query
+
+Compare two retrievers, embedding models, or rerankers against ground-truth relevance labels (`Qrels`), score recall@k, MRR, and nDCG, attribute dropouts across stages, check latency percentiles, and generate handoff pages:
+
+```python
+from assay_sdk import (
+    Qrels,
+    compare_retrieval,
+    expect,
+)
+
+# 1. Load relevance labels from TREC qrels, CSV, or dictionary
+qrels = Qrels.from_dict({
+    "q_return_policy": {"kb-return-policy": 1.0, "kb-exceptions": 1.0},
+    "q_shipping": {"kb-shipping-fees": 1.0},
+}, slices={"q_return_policy": "returns", "q_shipping": "shipping"})
+
+# Conjunctive evidence ("all the evidence, not some")
+qrels.set_conjunctive("q_return_policy", {"kb-return-policy", "kb-exceptions"})
+
+# 2. Compare baseline and candidate runs
+report = compare_retrieval(baseline_results, candidate_results, qrels, k=5)
+print(report.summary())
+
+# 3. Generate a complete stakeholder handoff page and regression guard tests
+handoff_markdown = report.generate_handoff_page()
+guard_tests = report.make_regression_tests()
+
+# 4. Guard test suites against regressions
+expect(report).no_retrieval_regressions()
+expect(report).recall_improved_or_equal()
+expect(report).latency_p95_below(120.0)  # ms
+expect(report).labels_clean()
+expect(report).all_conjunctive_evidence_retrieved()
+```
+
 Each model call also records what its input was made of: the system prompt, tool definitions,
 history and user message in tokens, images and video (count, bytes, size), and settings
 (temperature, max tokens, reasoning effort). `assay.instrument()` reads them from the request;

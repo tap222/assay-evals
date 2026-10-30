@@ -139,6 +139,11 @@ class Step(_E):
     query: Optional[str] = Field(None, max_length=32768)
     fragments: Optional[List[Dict[str, Any]]] = Field(
         None, max_length=1000, description='retrieval: [{"id", "tokens", "used", "score", "source", "text"}]')
+    stages: Optional[List[Dict[str, Any]]] = Field(None, max_length=50, description="retrieval: intermediate pipeline stages")
+    timings: Optional[Dict[str, float]] = Field(None, description="retrieval: stage durations in ms")
+    filters: Optional[Dict[str, Any]] = Field(None, description="retrieval: filters applied to query")
+    query_id: Optional[str] = Field(None, max_length=128, description="retrieval: query id")
+    slice: Optional[str] = Field(None, max_length=128, description="retrieval: query slice or tag")
     # state
     op: Optional[Literal["create", "update", "delete"]] = None
     value: Optional[Any] = None
@@ -195,12 +200,12 @@ class Step(_E):
                    "tool": {"args", "result", "server"}, "state": {"op", "value"}, "answer": {"text"},
                    "stage": {"outputs", "did_work", "prompt"}, "approval": {"decision", "by", "text"},
                    "resource": {"uri", "result", "server"}, "mcp_prompt": {"args", "result", "server"},
-                   "plan": {"plan", "text"}, "retrieval": {"query", "fragments", "server"},
+                   "plan": {"plan", "text"}, "retrieval": {"query", "fragments", "server", "stages", "timings", "filters", "query_id", "slice"},
                    "user": {"text"}}[self.kind]
         specific = {"model", "tokens_in", "tokens_out", "cost_usd", "prompt", "text", "args", "result", "op",
                     "value", "outputs", "did_work", "tools", "decision", "by", "server", "uri", "plan",
                     "finish_reason", "tool_calls", "tokens_cached", "tokens_reasoning", "query", "fragments",
-                    "context", "media", "settings"}
+                    "context", "media", "settings", "stages", "timings", "filters", "query_id", "slice"}
         wrong = [f for f in specific - allowed if getattr(self, f) is not None]
         if wrong:
             raise ValueError(f"a {self.kind} step doesn't take {', '.join(sorted(wrong))}")

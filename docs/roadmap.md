@@ -468,6 +468,14 @@ phase are marked there too.
   - **Per-case evidence attribution & changed basis detection:** compares evidence between runs (`compare_case_evidence(base, cand, target_entity)`). Flags dropped, added, swapped, or superseded evidence. A changed basis under an unchanged answer is flagged as a high-priority finding (`is_changed_basis_finding=True`), not a pass.
   - **Superseded knowledge base fragments & entity leakage:** fragments carry version and date metadata; `is_superseded()` detects when a candidate cited outdated or superseded policies. `no_wrong_entity_records` flags queries consulting another customer's or entity's records.
   - **Fleet-wide reports & assertions:** `compare_evidence_diffs(base_runs, cand_runs)` computes summary diff reports, and `expect(run).no_changed_basis()`, `expect(run).no_superseded_evidence()`, and `expect(run).no_wrong_entity_records()` guard test suites. `evidence_diff` halts pull requests in `assay changes`.
+- **Retrieval on its own: two retrievers or rerankers, compared query by query:** scores retrievers and rerankers against relevance labels (qrels), detects regressions, and isolates root-cause dropouts across stages:
+  - **Query-by-query scoring & slicing:** scores queries with recall@k, MRR, and nDCG@k against ground-truth labels from Qrels or CSV files, split by slice tags (`recall_at_k`, `mrr`, `ndcg_at_k`, `Qrels`).
+  - **Configuration comparisons & significance testing:** compares baseline vs candidate configurations (`compare_retrieval()`), reporting regressions (found before, missed now), recoveries, and shared failures. Computes statistical significance with paired sign and t-tests (`paired_sign_test`, `paired_t_test`).
+  - **Label health audits before scoring:** checks for unlabeled retrieved documents (preventing missing judgments from unfairly penalizing better models), conflicting labels for the same query/document, and inconsistent scales (`check_labels()`, `LabelHealthReport`, `expect(report).labels_clean()`).
+  - **Stage dropout attribution:** traces intermediate pipeline stages (routing, dense/sparse candidate retrieval, metadata filtering, cross-encoder reranking) and reports missed documents at the exact stage they were lost (`attribute_dropout()`, `DropoutAttribution`).
+  - **Latency percentiles & quality parity:** records per-stage timings (embedding, search, fusing, reranking) and calculates p50, p95, and p99 latencies (`compute_percentiles()`, `TimingPercentiles`, `expect(report).latency_p95_below()`).
+  - **Conjunctive multi-passage evidence:** verifies "all the evidence, not some" for complex questions requiring multiple passages (`conjunctive_recall()`, `expect(report).all_conjunctive_evidence_retrieved()`).
+  - **Losses into tests & reviewer handoff page:** turns regressions into executable Assay test cases (`make_regression_tests()`, `expect(run).retrieval_meets_criterion()`) and generates publication-grade Markdown handoff pages for stakeholders (`generate_handoff_page()`). `retrieval_regression` halts pull requests in `assay changes`.
 
 ## Not planned
 
@@ -485,40 +493,6 @@ phase are marked there too.
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send
   them to `POST /v1/ingest` directly, or use OpenTelemetry.
-- **Retrieval on its own: two retrievers or rerankers, compared query by query:** swapping an
-  embedding model, a chunk size or a reranker changes what's retrieved before any answer changes.
-  Assay records each fragment a run retrieved but doesn't score retrieval against relevance
-  labels. It should:
-  - **Score each query** with recall@k, MRR and nDCG against labels (which documents answer which
-    query), read from a qrels or CSV file or given per case, and split by slice.
-  - **Compare two configurations on the same queries:** regressions (found before, missed now),
-    recoveries, and shared failures (missed by both), the way `assay diff` does for answers. A
-    paired test says whether the overall change is real, and the report names the queries behind it.
-  - **Check the labels before the scores:** a retrieved document with no label (a missing judgment
-    counted as wrong drags a better retriever down), the same document labelled two ways for one
-    query, and labels on different scales. Each says how many results it affects, so a team fixes
-    the labels instead of reading noise.
-  - **Time and quality on the same queries:** `run.retrieve()` records one start and end per
-    retrieval. Each stage should get its own time (embedding the query, each search, fusing,
-    reranking), so a search engine's speed isn't confused with the embedding model's. The
-    comparison shows p50, p95 and p99 next to recall for each configuration, with the filters the
-    app really uses (permissions, metadata) and at the concurrency it's run at, since a fast
-    median on an unfiltered index hides the slow tail.
-  - **Keep the evidence:** each finding links the query, both result lists and the labels, so
-    someone else can rerun it and get the same numbers.
-  - **Where the document dropped out:** a router, a filter or a cluster choice before the search
-    loses a document that nothing after it can bring back. Each stage's candidates are recorded,
-    and a missed document is reported at the stage that dropped it: routed to the wrong cluster,
-    filtered out, never in the candidates, or ranked too low.
-  - **All the evidence, not some:** a question that needs two passages, say the general rule and
-    an exception filed somewhere else, passes only when both are retrieved. Recall@k averages
-    over documents and hides it, so these cases are reported on their own.
-  - **Make the losses into tests:** each regression becomes a case with its success criterion
-    ("kb-12 in the top 5"), so the next change is held to it.
-  - **A handoff page:** the comparison, label problems and open regressions as one page for a
-    client, or a reviewer who approves the change. Rerun after a fix, it shows what moved.
-  It works from saved results, so a team can compare runs it already has without sharing its
-  index or rerunning anything.
 - **Embedding changes treated as data migrations (RAG):** if ingestion and queries quietly move to
   different embedding models, retrieval still returns neighbors, and the scores look like ordinary
   similarity. Assay records each fragment's id, source and score, but not what made its vector. It
