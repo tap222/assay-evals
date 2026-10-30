@@ -26,7 +26,8 @@ __all__ = ["tool_calls", "assert_called", "assert_not_called", "assert_called_be
            "assert_valid_agent_handoffs", "assert_advice_was_read_only", "assert_transfer_was_accepted",
            "assert_no_permission_escalation",
            "assert_no_risky_divergences", "assert_replay_agreement", "assert_max_divergence_rate",
-           "assert_serving_matches", "assert_no_stable_regressions", "assert_serving_parity", "assert_cost_savings"]
+           "assert_serving_matches", "assert_no_stable_regressions", "assert_serving_parity", "assert_cost_savings",
+           "assert_no_changed_basis", "assert_no_superseded_evidence", "assert_no_wrong_entity_records", "assert_evidence_parity"]
 
 
 def rewordings(*wordings: str, arg: str = "wording"):
@@ -1120,6 +1121,42 @@ class Expectations:
 
         return self._add(f"cost_savings_at_least({min_savings_pct:.1f}%)", check)
 
+    def no_changed_basis(self, report: Optional[Any] = None) -> "Expectations":
+        """Expect zero changed evidence basis findings (especially under unchanged answers)."""
+        def check():
+            target_report = report if report is not None else getattr(self.run, "evidence_report", self.run)
+            if hasattr(target_report, "changed_basis_under_same_answer_count"):
+                if target_report.changed_basis_under_same_answer_count > 0:
+                    changed_cases = [c.case_name for c in getattr(target_report, "case_diffs", []) if c.is_changed_basis_finding]
+                    return f"{target_report.changed_basis_under_same_answer_count} case(s) produced unchanged answer from changed evidence basis: {', '.join(changed_cases)}"
+            return None
+
+        return self._add("no_changed_basis", check)
+
+    def no_superseded_evidence(self, report: Optional[Any] = None) -> "Expectations":
+        """Expect that no case rested on superseded or older policy versions / dates."""
+        def check():
+            target_report = report if report is not None else getattr(self.run, "evidence_report", self.run)
+            if hasattr(target_report, "superseded_evidence_count"):
+                if target_report.superseded_evidence_count > 0:
+                    cases = [c.case_name for c in getattr(target_report, "case_diffs", []) if c.superseded_evidence]
+                    return f"{target_report.superseded_evidence_count} superseded evidence item(s) consulted in case(s): {', '.join(cases)}"
+            return None
+
+        return self._add("no_superseded_evidence", check)
+
+    def no_wrong_entity_records(self, report: Optional[Any] = None) -> "Expectations":
+        """Expect that no case consulted records of another entity (wrong customer or account)."""
+        def check():
+            target_report = report if report is not None else getattr(self.run, "evidence_report", self.run)
+            if hasattr(target_report, "wrong_entity_count"):
+                if target_report.wrong_entity_count > 0:
+                    cases = [c.case_name for c in getattr(target_report, "case_diffs", []) if c.wrong_entity_records]
+                    return f"{target_report.wrong_entity_count} cross-entity record(s) consulted in case(s): {', '.join(cases)}"
+            return None
+
+        return self._add("no_wrong_entity_records", check)
+
     def failures(self) -> List[str]:
         """Every expectation that doesn't hold, as "name: why"."""
         out = []
@@ -1247,3 +1284,19 @@ def assert_serving_parity(report: Any, max_divergent_cases: int = 0) -> None:
 
 def assert_cost_savings(report: Any, min_savings_pct: float = 0.0) -> None:
     expect(report).cost_savings_at_least(min_savings_pct=min_savings_pct, report=report).verify()
+
+
+def assert_no_changed_basis(report: Any) -> None:
+    expect(report).no_changed_basis(report=report).verify()
+
+
+def assert_no_superseded_evidence(report: Any) -> None:
+    expect(report).no_superseded_evidence(report=report).verify()
+
+
+def assert_no_wrong_entity_records(report: Any) -> None:
+    expect(report).no_wrong_entity_records(report=report).verify()
+
+
+def assert_evidence_parity(report: Any) -> None:
+    expect(report).no_changed_basis(report=report).no_superseded_evidence(report=report).no_wrong_entity_records(report=report).verify()

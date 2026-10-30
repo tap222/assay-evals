@@ -463,6 +463,11 @@ phase are marked there too.
   - **Record the serving setup with each call:** records quantization (`int8`, `4-bit`, `fp16`), inference engine and version (`vLLM`, `llama.cpp`), hardware accelerator (`A100`, `H100`, `L40S`, `Apple Silicon`), and batch size with each model call (`ServingSetup`, `run.llm(..., serving=...)`, `expect(run).serving_matches()`).
   - **Run the same cases on both setups:** compares test cases across two setups (`compare_serving_setups()`), reporting cost and latency differences (e.g. "4-bit saves 60% and changes these 3 cases"). Cases that were historically stable on the baseline and now differ are ranked first (`expect(report).no_stable_regressions()`).
   - **Point to the first step that differs:** in an agent run, pinpoints the exact first call or action whose output changed between the two setups (`find_first_differing_step()`), isolating root causes from downstream cascade differences.
+- **Evidence diffs: the same answer, from different evidence:** attributes answers to evidence documents and records, detecting when an unchanged answer rested on a changed, superseded, or wrong-entity basis:
+  - **Decision provenance:** extracts complete evidentiary provenance (`DecisionProvenance`, `extract_decision_provenance(run)`) including retrieved fragments (`id`, `source`, `version`, `date`, `entity`), tool records, policy versions, and consulted entities.
+  - **Per-case evidence attribution & changed basis detection:** compares evidence between runs (`compare_case_evidence(base, cand, target_entity)`). Flags dropped, added, swapped, or superseded evidence. A changed basis under an unchanged answer is flagged as a high-priority finding (`is_changed_basis_finding=True`), not a pass.
+  - **Superseded knowledge base fragments & entity leakage:** fragments carry version and date metadata; `is_superseded()` detects when a candidate cited outdated or superseded policies. `no_wrong_entity_records` flags queries consulting another customer's or entity's records.
+  - **Fleet-wide reports & assertions:** `compare_evidence_diffs(base_runs, cand_runs)` computes summary diff reports, and `expect(run).no_changed_basis()`, `expect(run).no_superseded_evidence()`, and `expect(run).no_wrong_entity_records()` guard test suites. `evidence_diff` halts pull requests in `assay changes`.
 
 ## Not planned
 
@@ -480,15 +485,6 @@ phase are marked there too.
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send
   them to `POST /v1/ingest` directly, or use OpenTelemetry.
-- **Evidence diffs: the same answer, from different evidence.** Two runs can both say "approved"
-  while the new one read an older policy, or the wrong customer's record. Each retrieved fragment
-  is recorded (id, source, score, whether it went into the prompt) and each tool call with its
-  result, but the diff compares the flow and the counts, not the evidence. It should say, per
-  case, which documents and records an answer rested on, and what changed against the baseline:
-  evidence dropped, added or swapped, a record of another entity. A changed basis under an
-  unchanged answer is a finding, not a pass. Fragments take a version and a date, so evidence that
-  was superseded shows as such. This is also the provenance for a decision: which policy version
-  and which records supported it.
 - **Retrieval on its own: two retrievers or rerankers, compared query by query:** swapping an
   embedding model, a chunk size or a reranker changes what's retrieved before any answer changes.
   Assay records each fragment a run retrieved but doesn't score retrieval against relevance

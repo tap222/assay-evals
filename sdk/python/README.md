@@ -586,6 +586,34 @@ expect(report).cost_savings_at_least(50.0)
 expect(report).no_stable_regressions()
 ```
 
+### Evidence diffs and decision provenance
+
+Detect when an answer stayed the same ("Claim approved") but the underlying evidentiary basis changed (read superseded v1 policy, or queried a different customer's record):
+
+```python
+from assay_sdk import (
+    compare_case_evidence,
+    compare_evidence_diffs,
+    extract_decision_provenance,
+    expect,
+)
+
+# Decision provenance records policy versions and documents consulted
+prov = extract_decision_provenance(run)
+print(prov.policy_versions, prov.entities_consulted)
+
+# Compare candidate run against baseline run
+diff = compare_case_evidence(base_run, cand_run, target_entity="cust_123")
+if diff.is_changed_basis_finding:
+    print("Warning: Answer is identical, but evidence basis changed!")
+    print(f"Dropped: {len(diff.dropped_evidence)}, Superseded: {len(diff.superseded_evidence)}")
+
+# Assertions in test suites
+expect(cand_run).no_changed_basis(base_run)
+expect(cand_run).no_superseded_evidence(base_run)
+expect(cand_run).no_wrong_entity_records(target_entity="cust_123")
+```
+
 Each model call also records what its input was made of: the system prompt, tool definitions,
 history and user message in tokens, images and video (count, bytes, size), and settings
 (temperature, max tokens, reasoning effort). `assay.instrument()` reads them from the request;

@@ -51,7 +51,9 @@ __all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correc
            "check_booking_details", "check_spoken_leaks", "check_handoff_summary", "compare_voice_runs",
            "AgentHandoffContract", "AgentTreeNode", "validate_agent_handoffs", "build_agent_tree", "render_agent_tree", "diff_agent_trees",
            "Decision", "DecisionDivergence", "RunReplayResult", "ReplayReport", "classify_tool_risk", "check_tool_definitions_drift", "replay_decision_by_decision",
-           "ServingSetup", "StepDiff", "CaseServingDiff", "ServingDiffReport", "find_first_differing_step", "compare_serving_setups"]
+           "ServingSetup", "StepDiff", "CaseServingDiff", "ServingDiffReport", "find_first_differing_step", "compare_serving_setups",
+           "EvidenceItem", "DecisionProvenance", "CaseEvidenceDiff", "EvidenceDiffReport", "is_superseded",
+           "extract_evidence_items", "extract_decision_provenance", "compare_case_evidence", "compare_evidence_diffs"]
 __version__ = "0.5.0"
 
 log = logging.getLogger("assay_sdk")
@@ -960,4 +962,16 @@ from assay_sdk.serving import (  # noqa: E402
     StepDiff,
     compare_serving_setups,
     find_first_differing_step,
+)
+# Evidence diffs and decision provenance (assay_sdk/evidence.py).
+from assay_sdk.evidence import (  # noqa: E402
+    CaseEvidenceDiff,
+    DecisionProvenance,
+    EvidenceDiffReport,
+    EvidenceItem,
+    compare_case_evidence,
+    compare_evidence_diffs,
+    extract_decision_provenance,
+    extract_evidence_items,
+    is_superseded,
 )

@@ -58,6 +58,9 @@ def _one(x: Any, i: int, max_text: Optional[int] = MAX_TEXT) -> dict:
         source = source or meta.get("source") or meta.get("file_name") or meta.get("url")
         page = _get(x, "page") or meta.get("page") or meta.get("page_number")
         section = _get(x, "section") or meta.get("section") or meta.get("sec")
+        version = _get(x, "version") or meta.get("version") or meta.get("ver")
+        date = _get(x, "date") or meta.get("date") or meta.get("updated_at") or meta.get("created_at") or meta.get("timestamp")
+        entity = _get(x, "entity") or meta.get("entity") or meta.get("customer_id") or meta.get("user_id") or meta.get("account_id")
     text = text if isinstance(text, str) else (None if text is None else str(text))
     out = {"id": str(fid) if fid is not None else str(i), "position": i}
     if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0:
@@ -68,6 +71,12 @@ def _one(x: Any, i: int, max_text: Optional[int] = MAX_TEXT) -> dict:
         out["score"] = float(score)
     if source:
         out["source"] = str(source)[:512]
+    if version:
+        out["version"] = str(version)[:64]
+    if date:
+        out["date"] = str(date)[:64]
+    if entity:
+        out["entity"] = str(entity)[:128]
     if page is not None:
         out["page"] = int(page) if str(page).isdigit() else str(page)
     if section is not None:
