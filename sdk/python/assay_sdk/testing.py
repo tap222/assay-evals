@@ -25,7 +25,8 @@ __all__ = ["tool_calls", "assert_called", "assert_not_called", "assert_called_be
            "assert_booking_holds", "assert_read_back_details", "assert_no_spoken_leaks", "assert_no_talk_overs",
            "assert_valid_agent_handoffs", "assert_advice_was_read_only", "assert_transfer_was_accepted",
            "assert_no_permission_escalation",
-           "assert_no_risky_divergences", "assert_replay_agreement", "assert_max_divergence_rate"]
+           "assert_no_risky_divergences", "assert_replay_agreement", "assert_max_divergence_rate",
+           "assert_serving_matches", "assert_no_stable_regressions", "assert_serving_parity", "assert_cost_savings"]
 
 
 def rewordings(*wordings: str, arg: str = "wording"):
@@ -1059,6 +1060,66 @@ class Expectations:
 
         return self._add(f"max_divergence_rate({max_rate * 100:.1f}%)", check)
 
+    def serving_matches(self, expected: Union[Dict[str, Any], Any]) -> "Expectations":
+        """Expect that the model serving setup (quantization, engine, hardware) matches expected."""
+        from assay_sdk.serving import normalize_serving
+
+        def check():
+            target_setup = getattr(self.run, "serving", None)
+            if not target_setup and hasattr(self.run, "steps"):
+                for s in self.run.steps:
+                    if s.get("kind") == "llm" and s.get("serving"):
+                        target_setup = s.get("serving")
+                        break
+            actual = normalize_serving(target_setup)
+            exp = normalize_serving(expected)
+            if actual is None or exp is None:
+                if actual != exp:
+                    return f"Serving setup mismatch: expected {expected!r}, got {target_setup!r}"
+                return None
+            exp_dict = exp.to_dict()
+            act_dict = actual.to_dict()
+            for k, v in exp_dict.items():
+                if act_dict.get(k) != v:
+                    return f"Serving {k} mismatch: expected {v!r}, got {act_dict.get(k)!r}"
+            return None
+
+        return self._add("serving_matches", check)
+
+    def no_stable_regressions(self, report: Optional[Any] = None) -> "Expectations":
+        """Expect zero regressions on cases that were historically stable under baseline serving."""
+        def check():
+            target_report = report if report is not None else getattr(self.run, "serving_report", self.run)
+            if hasattr(target_report, "stable_regressions_count"):
+                if target_report.stable_regressions_count > 0:
+                    stable_cases = [c.case_name for c in getattr(target_report, "case_diffs", []) if not c.identical_output and c.was_previously_stable]
+                    return f"{target_report.stable_regressions_count} previously stable case(s) changed: {', '.join(stable_cases)}"
+            return None
+
+        return self._add("no_stable_regressions", check)
+
+    def max_serving_divergence(self, max_cases: int = 0, report: Optional[Any] = None) -> "Expectations":
+        """Expect at most max_cases differing between two serving setups."""
+        def check():
+            target_report = report if report is not None else getattr(self.run, "serving_report", self.run)
+            if hasattr(target_report, "changed_cases_count"):
+                if target_report.changed_cases_count > max_cases:
+                    return f"{target_report.changed_cases_count} cases changed under new serving setup (max allowed: {max_cases})"
+            return None
+
+        return self._add(f"max_serving_divergence({max_cases})", check)
+
+    def cost_savings_at_least(self, min_savings_pct: float = 0.0, report: Optional[Any] = None) -> "Expectations":
+        """Expect that the candidate serving setup achieved at least min_savings_pct cost savings."""
+        def check():
+            target_report = report if report is not None else getattr(self.run, "serving_report", self.run)
+            if hasattr(target_report, "cost_savings_pct"):
+                if target_report.cost_savings_pct < min_savings_pct:
+                    return f"Cost savings was {target_report.cost_savings_pct:.1f}% (required: at least {min_savings_pct:.1f}%)"
+            return None
+
+        return self._add(f"cost_savings_at_least({min_savings_pct:.1f}%)", check)
+
     def failures(self) -> List[str]:
         """Every expectation that doesn't hold, as "name: why"."""
         out = []
@@ -1170,3 +1231,19 @@ def assert_replay_agreement(report: Any, min_agreement: float = 0.95) -> None:
 
 def assert_max_divergence_rate(report: Any, max_rate: float = 0.05) -> None:
     expect(report).max_divergence_rate(max_rate=max_rate, report=report).verify()
+
+
+def assert_serving_matches(run: Any, expected: Union[Dict[str, Any], Any]) -> None:
+    expect(run).serving_matches(expected).verify()
+
+
+def assert_no_stable_regressions(report: Any) -> None:
+    expect(report).no_stable_regressions(report=report).verify()
+
+
+def assert_serving_parity(report: Any, max_divergent_cases: int = 0) -> None:
+    expect(report).max_serving_divergence(max_cases=max_divergent_cases, report=report).verify()
+
+
+def assert_cost_savings(report: Any, min_savings_pct: float = 0.0) -> None:
+    expect(report).cost_savings_at_least(min_savings_pct=min_savings_pct, report=report).verify()

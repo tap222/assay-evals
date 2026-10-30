@@ -1462,6 +1462,13 @@ def change_text(x: dict) -> str:
     if x["what"] == "settings":
         return "settings " + ", ".join(f"{k} {a if a is not None else '(unset)'} → {b if b is not None else '(unset)'}"
                                         for k, (a, b) in x["changed"].items())
+    if x["what"] == "serving":
+        parts = []
+        for k in ("engine", "quantization", "hardware", "batch_size", "kv_cache_dtype"):
+            if k in x.get("changed", {}):
+                a, b = x["changed"][k]
+                parts.append(f"{k} {a or '(default)'} → {b or '(default)'}")
+        return "serving " + (", ".join(parts) if parts else str(x.get("changed", "")))
     if x["what"] == "media":
         def m(v):
             if not v:

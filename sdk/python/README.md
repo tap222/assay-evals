@@ -541,6 +541,51 @@ expect(report).no_risky_divergences()
 expect(report).min_replay_agreement(0.95)
 ```
 
+### The same model, served differently: serving diffs and first differing step
+
+```python
+from assay_sdk import (
+    ServingSetup,
+    compare_serving_setups,
+    find_first_differing_step,
+    assert_cost_savings,
+    assert_no_stable_regressions,
+)
+
+# 1. Record serving infrastructure with calls
+setup_fp16 = ServingSetup(quantization="fp16", engine="vllm", engine_version="0.5.4", hardware="A100")
+setup_4bit = ServingSetup(quantization="4-bit", engine="vllm", engine_version="0.6.2", hardware="L40S")
+
+with assay.run("classify_doc", serving=setup_4bit) as run:
+    run.llm(model="llama-3.3-70b", tokens_in=600, tokens_out=80, cost_usd=0.003, text="Legal contract")
+    run.answer("Legal contract")
+
+expect(run).serving_matches(setup_4bit)
+
+# 2. Compare test cases across both setups
+report = compare_serving_setups(
+    baseline_runs,
+    candidate_runs,
+    baseline_setup=setup_fp16,
+    candidate_setup=setup_4bit,
+    historically_stable_cases={"classify_doc", "extract_total"},
+)
+print(report.summary())
+# Model serving diff (vllm 0.6.2 4-bit (L40S) vs vllm 0.5.4 fp16 (A100)):
+#   Cost & Latency: saves 60.0%, -45.0% faster
+#   Cases: 3 changed out of 47 total (1 previously stable)
+#   Changed cases (stable cases first):
+#     • extract_total [PREVIOUSLY STABLE] (first differed at step 2)
+
+# 3. Pinpoint the first differing step in multi-step agent runs
+diff = find_first_differing_step(base_agent_run, cand_agent_run)
+if diff:
+    print(f"First divergence at step {diff.step_index}: {diff.explanation}")
+
+expect(report).cost_savings_at_least(50.0)
+expect(report).no_stable_regressions()
+```
+
 Each model call also records what its input was made of: the system prompt, tool definitions,
 history and user message in tokens, images and video (count, bytes, size), and settings
 (temperature, max tokens, reasoning effort). `assay.instrument()` reads them from the request;

@@ -459,6 +459,10 @@ phase are marked there too.
   - **Risk weighting:** divergences on tools that write, spend money, or alter state weigh more heavily (high risk) than reads (`write_spend_divergences` vs `read_divergences`: `expect(report).no_risky_divergences()`).
   - **Scored against outcome and checks:** divergences scored against the original run's outcome and case checks (better, worse, or unclear).
   - **Tool definitions drift:** runs whose tool definitions changed since they were recorded are detected (`check_tool_definitions_drift()`) and set apart in `runs_with_changed_tool_definitions`.
+- **The same model, served differently (self-hosted and open-weight models):** tracks serving infrastructure and attributes divergences:
+  - **Record the serving setup with each call:** records quantization (`int8`, `4-bit`, `fp16`), inference engine and version (`vLLM`, `llama.cpp`), hardware accelerator (`A100`, `H100`, `L40S`, `Apple Silicon`), and batch size with each model call (`ServingSetup`, `run.llm(..., serving=...)`, `expect(run).serving_matches()`).
+  - **Run the same cases on both setups:** compares test cases across two setups (`compare_serving_setups()`), reporting cost and latency differences (e.g. "4-bit saves 60% and changes these 3 cases"). Cases that were historically stable on the baseline and now differ are ranked first (`expect(report).no_stable_regressions()`).
+  - **Point to the first step that differs:** in an agent run, pinpoints the exact first call or action whose output changed between the two setups (`find_first_differing_step()`), isolating root causes from downstream cascade differences.
 
 ## Not planned
 
@@ -476,18 +480,6 @@ phase are marked there too.
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send
   them to `POST /v1/ingest` directly, or use OpenTelemetry.
-- **The same model, served differently (self-hosted and open-weight models):** a team keeps the
-  model and changes how it runs: int8 or 4-bit instead of 16-bit weights, a new vLLM or llama.cpp
-  version, another GPU, a bigger batch. The weights' name is the same, so nothing in the run says
-  the model changed, yet outputs can, even at temperature 0. `settings` records temperature and
-  similar, not how the model was served. It should:
-  - **Record the serving setup with each call:** the quantization, the inference engine and its
-    version, the hardware, so a change to any of them shows as a cause like a new prompt or model.
-  - **Run the same cases on both setups:** the usual diff, case by case, with the cost and latency
-    of each next to it, so "4-bit saves 60% and changes these 3 cases" is one report. Cases that
-    gave the same answer every time on the old setup and now differ are listed first.
-  - **Point to the first step that differs:** in an agent run, the first call whose output changed
-    between the two setups, rather than every step after it.
 - **Evidence diffs: the same answer, from different evidence.** Two runs can both say "approved"
   while the new one read an older policy, or the wrong customer's record. Each retrieved fragment
   is recorded (id, source, score, whether it went into the prompt) and each tool call with its

@@ -50,7 +50,8 @@ __all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correc
            "compute_voice_call_metrics", "simulate_call", "resolve_relative_date", "check_read_back",
            "check_booking_details", "check_spoken_leaks", "check_handoff_summary", "compare_voice_runs",
            "AgentHandoffContract", "AgentTreeNode", "validate_agent_handoffs", "build_agent_tree", "render_agent_tree", "diff_agent_trees",
-           "Decision", "DecisionDivergence", "RunReplayResult", "ReplayReport", "classify_tool_risk", "check_tool_definitions_drift", "replay_decision_by_decision"]
+           "Decision", "DecisionDivergence", "RunReplayResult", "ReplayReport", "classify_tool_risk", "check_tool_definitions_drift", "replay_decision_by_decision",
+           "ServingSetup", "StepDiff", "CaseServingDiff", "ServingDiffReport", "find_first_differing_step", "compare_serving_setups"]
 __version__ = "0.5.0"
 
 log = logging.getLogger("assay_sdk")
@@ -341,6 +342,7 @@ class Run:
         self.credential_type: Optional[str] = None
         self.credential_owner: Optional[str] = None
         self.voice_call_record: Optional[Any] = None
+        self.serving: Optional[Any] = None
 
     def _case(self) -> Dict[str, Any]:
         if not self.test:
@@ -373,14 +375,16 @@ class Run:
             tools: Optional[List[Any]] = None, name: Optional[str] = None, finish_reason: Optional[str] = None,
             tool_calls: Optional[List[dict]] = None, tokens_cached: Optional[int] = None,
             tokens_reasoning: Optional[int] = None, context: Optional[Dict[str, int]] = None,
-            media: Optional[Dict[str, Any]] = None, settings: Optional[Dict[str, Any]] = None) -> None:
+            media: Optional[Dict[str, Any]] = None, settings: Optional[Dict[str, Any]] = None,
+            serving: Optional[Union[Dict[str, Any], Any]] = None) -> None:
         """A model call. prompt is "id@version"; text is the output (or a summary of it); tools are the
         tools the model was offered (names, or the tool definitions you passed the model). name: the
         step it belongs to, for a pipeline (the calls of a step are its cost and its models). Without
         cost_usd, the cost comes from ASSAY_PRICES ([prices] in assay.toml) when the model has one.
         context: what the input was made of, in tokens ({"system", "tools", "history", "user",
         "retrieved"}); media: images and video ({"images", "videos", "bytes", "size", "detail"});
-        settings: temperature, max_tokens, reasoning effort, ... assay.instrument() fills all three."""
+        settings: temperature, max_tokens, reasoning effort, ... assay.instrument() fills all three;
+        serving: quantization, inference engine, engine version, hardware accelerator, batch size."""
         if cost_usd is None and model and (tokens_in or tokens_out):
             from assay_sdk.runtime import env_prices, price_of
             p = price_of(env_prices(), model)
@@ -391,12 +395,14 @@ class Run:
         self.tool_schemas.update(schemas)  # sent once per run and tool, not with every call
         collisions = tool_collisions(tools)
         collisions_list = [{"name": k, "servers": v} for k, v in collisions.items()] if collisions else None
+        serv = serving if serving is not None else getattr(self, "serving", None)
+        serv_dict = serv.to_dict() if hasattr(serv, "to_dict") else serv
         self._step("llm", started, name=name, finish_reason=finish_reason, tool_calls=self._c.clean(tool_calls),
                    tool_schemas=schemas or None, tool_collisions=collisions_list, raw_tools=self._c.clean(tools),
                    tokens_cached=tokens_cached, tokens_reasoning=tokens_reasoning, model=model, tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd,
                    prompt=prompt, text=self._c.clean(text), ended_at=_ts(ended),
                    status="error" if error else "ok", error=error, tools=_tool_names(tools),
-                   context=context, media=media, settings=settings)
+                   context=context, media=media, settings=settings, serving=serv_dict)
 
     def approval(self, action: str, decision: str = "approved", by: Optional[str] = None,
                  reason: Optional[str] = None, server: Optional[str] = None,
@@ -641,7 +647,8 @@ def run(task: Optional[str] = None, *, run_id: Optional[str] = None, kind: str =
         duplicate: Optional[bool] = None, original_run_id: Optional[str] = None,
         agent_id: Optional[str] = None, owner: Optional[str] = None, requested_by: Optional[str] = None,
         credential: Optional[str] = None, credential_type: Optional[str] = None,
-        credential_owner: Optional[str] = None, tool_definitions: Optional[Any] = None):
+        credential_owner: Optional[str] = None, tool_definitions: Optional[Any] = None,
+        serving: Optional[Union[Dict[str, Any], Any]] = None):
     """Record one run. kind is "agent" (llm/tool/state/answer steps) or "pipeline" (stages).
     conversation="c-1", turn=2: this run is one turn of a conversation (turns from 0).
     user: who asked, as a pseudonymous id (a hash, not an email), so the same person asking again
@@ -665,6 +672,7 @@ def run(task: Optional[str] = None, *, run_id: Optional[str] = None, kind: str =
     r.duplicate = bool(duplicate) if duplicate is not None else False
     r.original_run_id = original_run_id
     r.tool_definitions = tool_definitions
+    r.serving = serving
     r.agent_id = agent_id or task
     r.owner = owner
     r.requested_by = requested_by or user
@@ -943,4 +951,13 @@ from assay_sdk.replay import (  # noqa: E402
     check_tool_definitions_drift,
     classify_tool_risk,
     replay_decision_by_decision,
+)
+# Model serving setups and serving diffs (assay_sdk/serving.py).
+from assay_sdk.serving import (  # noqa: E402
+    CaseServingDiff,
+    ServingDiffReport,
+    ServingSetup,
+    StepDiff,
+    compare_serving_setups,
+    find_first_differing_step,
 )
