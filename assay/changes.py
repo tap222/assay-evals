@@ -544,11 +544,12 @@ def _item(x: dict) -> str:
 # list: what broke first, then what looks wrong, then what nothing checked. The verdict says
 # whether to merge; the first three items say what to look at; the rest is one line of counts.
 
-ORDER = ["security_violation", "identity_violation", "drift_alert", "handoff_violation", "broken_transition", "voice_regression", "regressed", "weakened", "runner_config", "logged_error", "touched_real", "widened_reach", "unused_access", "new write", "handoff_diff", "untested, risky", "deploy", "changed", "untested", "expected value"]
-STOPS = {"security_violation", "identity_violation", "drift_alert", "handoff_violation", "broken_transition", "voice_regression", "regressed", "weakened", "runner_config", "logged_error", "touched_real"}  # what makes the verdict "not safe to merge"
+ORDER = ["security_violation", "identity_violation", "drift_alert", "decision_divergence", "handoff_violation", "broken_transition", "voice_regression", "regressed", "weakened", "runner_config", "logged_error", "touched_real", "widened_reach", "unused_access", "new write", "handoff_diff", "untested, risky", "deploy", "changed", "untested", "expected value"]
+STOPS = {"security_violation", "identity_violation", "drift_alert", "decision_divergence", "handoff_violation", "broken_transition", "voice_regression", "regressed", "weakened", "runner_config", "logged_error", "touched_real"}  # what makes the verdict "not safe to merge"
 NOUN = {"security_violation": ("security violation", "security violations"),
         "identity_violation": ("identity violation", "identity violations"),
         "drift_alert": ("runtime drift alert", "runtime drift alerts"),
+        "decision_divergence": ("decision divergence", "decision divergences"),
         "unused_access": ("unused access alert", "unused access alerts"),
         "handoff_violation": ("handoff contract violation", "handoff contract violations"),
         "handoff_diff": ("multi-agent tree change", "multi-agent tree changes"),
@@ -602,6 +603,10 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
         add("drift_alert", da["text"], detail=da.get("detail", ""),
             key=da.get("key") or f"drift:{da['text']}",
             case=da.get("cases", [None])[0] if da.get("cases") else None)
+    for dd in (run or {}).get("decision_divergences") or []:
+        add("decision_divergence", dd["text"], detail=dd.get("detail", ""),
+            key=dd.get("key") or f"decision_divergence:{dd['text']}",
+            case=dd.get("cases", [None])[0] if dd.get("cases") else None)
     for hv in (run or {}).get("handoff_violations") or []:
         add("handoff_violation", hv["text"], detail=hv.get("detail", ""),
             key=hv.get("key") or f"handoff:{hv['text']}",
@@ -676,11 +681,12 @@ def items(d: dict, run: Optional[dict], weakened: List[dict]) -> List[dict]:
 # ---------- marking an item intended ----------
 
 INTENDED = "assay.intended.toml"
-CAN_INTEND = {"runner_config", "logged_error", "touched_real", "widened_reach", "new write", "handoff_diff", "untested, risky", "untested", "deploy", "changed", "expected value"}
+CAN_INTEND = {"runner_config", "logged_error", "touched_real", "widened_reach", "new write", "handoff_diff", "decision_divergence", "untested, risky", "untested", "deploy", "changed", "expected value"}
 
 KEY_TO_KIND = {
     "write": "new write",
     "handoff_diff": "handoff_diff",
+    "decision_divergence": "decision_divergence",
     "untested": "untested",
     "deploy": "deploy",
     "changed": "changed",

@@ -452,6 +452,13 @@ phase are marked there too.
   - **No permission by message:** actions are held to human-granted originating scope and approvals, narrowed to the task, never wider, preventing escalation or borrowing approvals (`expect(run).no_permission_escalation()`).
   - **What was handed over:** required facts (customer, constraint, deadline) must not be dropped in the payload.
   - **Diff visualization as one tree:** builds a hierarchical execution tree from `parent_run_id` and handoffs (`build_agent_tree()`, `render_agent_tree()`), and pinpoints architectural and action differences across versions (`diff_agent_trees()`) in `assay changes`.
+- **Replay recorded runs, decision by decision:** replaying historical runs step by step against a candidate model, prompt, or tool router:
+  - **Decision-by-decision simulation:** gives the new setup the recorded history up to each step and compares its next decision (the tool, its arguments, or stopping) with the recorded one (`replay_decision_by_decision()`).
+  - **No re-execution:** tools are not run again; recorded results are fed back into history so nothing is charged, sent, or deleted.
+  - **Divergence classification:** counts where decisions diverge, grouped by kind (`another_tool`, `different_args`, `stopped_early`, `went_further`).
+  - **Risk weighting:** divergences on tools that write, spend money, or alter state weigh more heavily (high risk) than reads (`write_spend_divergences` vs `read_divergences`: `expect(report).no_risky_divergences()`).
+  - **Scored against outcome and checks:** divergences scored against the original run's outcome and case checks (better, worse, or unclear).
+  - **Tool definitions drift:** runs whose tool definitions changed since they were recorded are detected (`check_tool_definitions_drift()`) and set apart in `runs_with_changed_tool_definitions`.
 
 ## Not planned
 
@@ -469,16 +476,6 @@ phase are marked there too.
 - **SDKs for other languages:** there are SDKs for Python and for TypeScript and JavaScript.
   Other languages write the events `assay test` reads ([any language](any-language.md)), send
   them to `POST /v1/ingest` directly, or use OpenTelemetry.
-- **Replay recorded runs, decision by decision:** before switching a model, a prompt or a router
-  that picks tools, a team wants to know what it would have done on real traffic. Recorded runs
-  hold each step's input and each tool's result. Replaying one means giving the new setup the same
-  history up to a step and comparing its next decision (the tool, its arguments, or stopping) with
-  the recorded one. Tools aren't run again: the recorded results are fed back, so nothing is
-  charged, sent or deleted. The report counts where decisions diverge, grouped by kind (another
-  tool, other arguments, stopped early, went further), with each divergence scored against the
-  run's outcome and the case's checks: better, worse or unclear. A divergence on a tool that writes
-  or spends weighs more than one on a read. Runs whose tool definitions changed since they were
-  recorded are set apart, since their recorded results may no longer hold.
 - **The same model, served differently (self-hosted and open-weight models):** a team keeps the
   model and changes how it runs: int8 or 4-bit instead of 16-bit weights, a new vLLM or llama.cpp
   version, another GPU, a bigger batch. The weights' name is the same, so nothing in the run says

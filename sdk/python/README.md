@@ -511,6 +511,36 @@ print(render_agent_tree(tree))
 diffs = diff_agent_trees(baseline_tree, candidate_tree)
 ```
 
+### Replay recorded runs, decision by decision
+
+```python
+from assay_sdk import (
+    Decision,
+    replay_decision_by_decision,
+    assert_no_risky_divergences,
+    assert_replay_agreement,
+)
+
+# Replay past recorded runs against candidate model / prompt / router
+def candidate_agent(history, input, step_index, tool_definitions=None):
+    # Candidate makes decisions given the history up to each step
+    if step_index == 0:
+        return Decision.call("lookup_user", {"id": "u1"})
+    return Decision.stop("Found user details.")
+
+report = replay_decision_by_decision(past_runs, candidate_agent)
+print(report.summary())
+# Replay decision-by-decision: 50 run(s) replayed
+#   Overall agreement rate: 98.2%
+#   Divergences: 2 total (1 another tool, 1 different args, 0 stopped early, 0 went further)
+#   Risk weighting: 0 write/spend (HIGH), 2 read (LOW)
+#   Scoring: 1 better, 0 worse, 1 unclear, 48 identical runs
+
+# Assert no risky divergences on write or spend tools
+expect(report).no_risky_divergences()
+expect(report).min_replay_agreement(0.95)
+```
+
 Each model call also records what its input was made of: the system prompt, tool definitions,
 history and user message in tokens, images and video (count, bytes, size), and settings
 (temperature, max tokens, reasoning effort). `assay.instrument()` reads them from the request;

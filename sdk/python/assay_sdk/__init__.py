@@ -49,7 +49,8 @@ __all__ = ["init", "run", "tagged", "claim_review", "feedback", "check", "correc
            "CallerMove", "VoicePersona", "VoiceCallRecord", "VoiceTurn", "VoiceCallMetrics", "parse_call_record",
            "compute_voice_call_metrics", "simulate_call", "resolve_relative_date", "check_read_back",
            "check_booking_details", "check_spoken_leaks", "check_handoff_summary", "compare_voice_runs",
-           "AgentHandoffContract", "AgentTreeNode", "validate_agent_handoffs", "build_agent_tree", "render_agent_tree", "diff_agent_trees"]
+           "AgentHandoffContract", "AgentTreeNode", "validate_agent_handoffs", "build_agent_tree", "render_agent_tree", "diff_agent_trees",
+           "Decision", "DecisionDivergence", "RunReplayResult", "ReplayReport", "classify_tool_risk", "check_tool_definitions_drift", "replay_decision_by_decision"]
 __version__ = "0.5.0"
 
 log = logging.getLogger("assay_sdk")
@@ -327,6 +328,7 @@ class Run:
         self.expectations: List[Any] = []  # assay_sdk.testing.expect(run): checked when the test ends
         self.request: Any = None  # what the run was asked (input=): personal data it gave may be said back
         self.tool_schemas: Dict[str, dict] = {}  # the input schema of each tool a model was offered
+        self.tool_definitions: Optional[Any] = None
         self.duplicate: bool = False  # True if this run is a duplicate delivery of a request
         self.original_run_id: Optional[str] = None
         self.task: Optional[str] = None
@@ -639,7 +641,7 @@ def run(task: Optional[str] = None, *, run_id: Optional[str] = None, kind: str =
         duplicate: Optional[bool] = None, original_run_id: Optional[str] = None,
         agent_id: Optional[str] = None, owner: Optional[str] = None, requested_by: Optional[str] = None,
         credential: Optional[str] = None, credential_type: Optional[str] = None,
-        credential_owner: Optional[str] = None):
+        credential_owner: Optional[str] = None, tool_definitions: Optional[Any] = None):
     """Record one run. kind is "agent" (llm/tool/state/answer steps) or "pipeline" (stages).
     conversation="c-1", turn=2: this run is one turn of a conversation (turns from 0).
     user: who asked, as a pseudonymous id (a hash, not an email), so the same person asking again
@@ -662,6 +664,7 @@ def run(task: Optional[str] = None, *, run_id: Optional[str] = None, kind: str =
     r.task = task
     r.duplicate = bool(duplicate) if duplicate is not None else False
     r.original_run_id = original_run_id
+    r.tool_definitions = tool_definitions
     r.agent_id = agent_id or task
     r.owner = owner
     r.requested_by = requested_by or user
@@ -930,4 +933,14 @@ from assay_sdk.handoffs import (  # noqa: E402
     diff_agent_trees,
     render_agent_tree,
     validate_agent_handoffs,
+)
+# Replay recorded runs decision by decision (assay_sdk/replay.py).
+from assay_sdk.replay import (  # noqa: E402
+    Decision,
+    DecisionDivergence,
+    ReplayReport,
+    RunReplayResult,
+    check_tool_definitions_drift,
+    classify_tool_risk,
+    replay_decision_by_decision,
 )

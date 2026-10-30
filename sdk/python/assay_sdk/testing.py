@@ -24,7 +24,8 @@ __all__ = ["tool_calls", "assert_called", "assert_not_called", "assert_called_be
            "assert_no_rubber_stamp_approvals", "assert_strictly_approved",
            "assert_booking_holds", "assert_read_back_details", "assert_no_spoken_leaks", "assert_no_talk_overs",
            "assert_valid_agent_handoffs", "assert_advice_was_read_only", "assert_transfer_was_accepted",
-           "assert_no_permission_escalation"]
+           "assert_no_permission_escalation",
+           "assert_no_risky_divergences", "assert_replay_agreement", "assert_max_divergence_rate"]
 
 
 def rewordings(*wordings: str, arg: str = "wording"):
@@ -281,7 +282,8 @@ class Expectations:
         self.run = run
         self.rules: List[Tuple[str, Callable[[], Optional[str]]]] = []
         self.verified = False
-        run.expectations.append(self)
+        if hasattr(run, "expectations") and isinstance(run.expectations, list):
+            run.expectations.append(self)
 
     def _add(self, name: str, rule: Callable[[], Optional[str]]) -> "Expectations":
         self.rules.append((name, rule))
@@ -1019,6 +1021,44 @@ class Expectations:
 
         return self._add("no_permission_escalation", check)
 
+    def no_risky_divergences(self, report: Optional[Any] = None) -> "Expectations":
+        """Expect that replay had zero write/spend divergences and zero worse scores."""
+        def check():
+            target_report = report if report is not None else getattr(self.run, "replay_report", self.run)
+            if hasattr(target_report, "write_spend_divergences"):
+                if target_report.write_spend_divergences:
+                    first = target_report.write_spend_divergences[0]
+                    return f"Risky write/spend divergence: {first.detail} (step {first.step_seq})"
+                worse_count = target_report.scores.get("worse", 0)
+                if worse_count > 0:
+                    return f"Replay produced {worse_count} worse decision divergence(s)"
+            return None
+
+        return self._add("no_risky_divergences", check)
+
+    def min_replay_agreement(self, min_rate: float = 0.95, report: Optional[Any] = None) -> "Expectations":
+        """Expect that decision replay agreement rate is at least min_rate."""
+        def check():
+            target_report = report if report is not None else getattr(self.run, "replay_report", self.run)
+            if hasattr(target_report, "agreement_rate"):
+                if target_report.agreement_rate < min_rate:
+                    return f"Replay agreement rate {target_report.agreement_rate * 100:.1f}% is below required {min_rate * 100:.1f}%"
+            return None
+
+        return self._add(f"min_replay_agreement({min_rate * 100:.1f}%)", check)
+
+    def max_divergence_rate(self, max_rate: float = 0.05, report: Optional[Any] = None) -> "Expectations":
+        """Expect that decision divergence rate does not exceed max_rate."""
+        def check():
+            target_report = report if report is not None else getattr(self.run, "replay_report", self.run)
+            if hasattr(target_report, "agreement_rate"):
+                div_rate = 1.0 - target_report.agreement_rate
+                if div_rate > max_rate:
+                    return f"Replay divergence rate {div_rate * 100:.1f}% exceeds max allowed {max_rate * 100:.1f}%"
+            return None
+
+        return self._add(f"max_divergence_rate({max_rate * 100:.1f}%)", check)
+
     def failures(self) -> List[str]:
         """Every expectation that doesn't hold, as "name: why"."""
         out = []
@@ -1037,7 +1077,7 @@ class Expectations:
         failed = self.failures() if not self.verified else []
         if not self.verified:
             self.verified = True
-            if self.run.test:  # a test case: each expectation is a check, compared with its baseline
+            if getattr(self.run, "test", None) and hasattr(self.run, "check"):  # a test case: each expectation is a check, compared with its baseline
                 bad = {f.split(": ", 1)[0]: f.split(": ", 1)[1] for f in failed}
                 for name, _ in self.rules:
                     self.run.check(f"expect.{name}", "fail" if name in bad else "pass", evaluator="assay.expect@1",
@@ -1118,3 +1158,15 @@ def assert_no_permission_escalation(run, originating_scope: Optional[Sequence[st
                                     originating_approvals: Optional[Sequence[str]] = None) -> None:
     expect(run).no_permission_escalation(originating_scope=originating_scope,
                                          originating_approvals=originating_approvals).verify()
+
+
+def assert_no_risky_divergences(report: Any) -> None:
+    expect(report).no_risky_divergences(report).verify()
+
+
+def assert_replay_agreement(report: Any, min_agreement: float = 0.95) -> None:
+    expect(report).min_replay_agreement(min_rate=min_agreement, report=report).verify()
+
+
+def assert_max_divergence_rate(report: Any, max_rate: float = 0.05) -> None:
+    expect(report).max_divergence_rate(max_rate=max_rate, report=report).verify()
