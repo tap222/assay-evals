@@ -44,16 +44,25 @@ nav.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:
 nav.tabs a{padding:10px 12px;color:var(--muted);font-weight:500;text-decoration:none;border-bottom:2px solid transparent;white-space:nowrap}
 nav.tabs a[aria-current=page]{color:var(--ink);border-bottom-color:var(--accent)}
 nav.tabs .spacer{flex:1}
-.viewswitch{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;align-self:center}
-.viewswitch button{border:0;border-radius:0;padding:5px 14px;color:var(--muted);font-weight:500}
-.viewswitch button+button{border-left:1px solid var(--line)}
-.viewswitch button[aria-pressed=true]{background:var(--accent-soft);color:var(--accent-ink)}
-.viewhead{display:flex;gap:12px;align-items:flex-start;cursor:pointer}
-.viewhead h2{margin:0}
-.toggles{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px}
-.toggles label{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;background:var(--surface)}
-.toggles label small{display:block;color:var(--muted);font-size:12.5px;line-height:1.35}
-.toggles input,.viewhead input{padding:0;margin:4px 0 0;flex:none}
+.viewswitch{display:none!important}
+.settings-presets{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.preset-btn{padding:6px 12px;font-size:12.5px;font-weight:500;border:1px solid var(--line);border-radius:6px;background:var(--sunk);color:var(--ink);cursor:pointer;transition:all .15s}
+.preset-btn:hover{border-color:var(--accent);background:var(--surface);color:var(--accent-ink)}
+.settings-section{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px 18px;display:grid;gap:12px}
+.settings-section-head{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px}
+.settings-section-head h3{margin:0;font-size:15px;display:flex;align-items:center;gap:6px}
+.settings-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px}
+.tab-card{display:grid;grid-template-columns:20px 1fr;gap:8px;align-items:flex-start;padding:10px 12px;border:1.5px solid var(--line);border-radius:8px;background:var(--surface);cursor:pointer;transition:all .15s;user-select:none}
+.tab-card:hover{border-color:var(--line-strong)}
+.tab-card.active{border-color:var(--accent);background:var(--accent-soft)}
+.tab-card input{margin:3px 0 0;cursor:pointer}
+.tab-card b{font-size:13.5px;display:flex;align-items:center;gap:6px}
+.tab-card small{display:block;font-size:12px;color:var(--muted);line-height:1.35;margin-top:2px}
+.group-pills{display:flex;flex-wrap:wrap;gap:6px}
+.group-pill{display:inline-flex;align-items:center;padding:5px 12px;border:1.5px solid var(--line);border-radius:20px;font-size:12.5px;cursor:pointer;background:var(--surface);transition:all .15s;user-select:none}
+.group-pill:hover{border-color:var(--line-strong)}
+.group-pill.active{border-color:var(--accent);background:var(--accent-soft);color:var(--accent-ink);font-weight:600}
+.group-pill input{display:none}
 nav.tabs .badge{font-family:var(--mono);font-size:11px;background:var(--bad);color:#fff;border-radius:999px;padding:1px 6px;margin-left:6px}
 h2{font:600 20px var(--display);margin:0}
 h3{font:600 16px var(--display);margin:0}
@@ -458,53 +467,191 @@ function viewOn(name){const e=viewsConfig()?.views[name]?.enabled;return e==null
 function enabledViews(){const on=["agents","documents"].filter(viewOn);return on.length?on:["agents"]}
 function viewTabs(name){return viewsConfig()?.views[name]?.tabs||{agents:["overview","diff","failures","agents","alerts"],documents:["summary","workflow","measures","errors"]}[name]}
 function currentView(){const on=enabledViews(),v=store.get("assay-view");return on.includes(v)?v:on[0]}
+function allActiveTabs(){
+  const c=viewsConfig();
+  const set=new Set();
+  const v=c?.views||{};
+  if(v.agents?.enabled!==false && v.agents?.tabs){
+    v.agents.tabs.forEach(t=>set.add(t));
+  }
+  if(v.documents?.enabled!==false && v.documents?.tabs){
+    v.documents.tabs.forEach(t=>set.add(t));
+  }
+  if(!set.size){
+    const defs=["overview","diff","failures","agents","alerts"];
+    if(hasDocs())defs.push("summary","workflow","measures");
+    return defs;
+  }
+  const ORDER=["overview","diff","failures","agents","gates","prompts","learn","review","summary","workflow","measures","cost","errors","trace","alerts"];
+  const out=ORDER.filter(t=>set.has(t));
+  return out.length?out:["overview","diff","failures","agents","alerts"];
+}
 function markTab(){const t=tab();document.querySelectorAll("nav.tabs a").forEach(a=>{if(a.dataset.tab===t)a.setAttribute("aria-current","page");else a.removeAttribute("aria-current")})}
 function buildNav(){
-  const on=enabledViews(),cur=currentView(),sw=$("#viewswitch");
-  sw.hidden=on.length<2;
-  sw.innerHTML=on.map(v=>`<button type="button" data-v="${v}" aria-pressed="${v===cur}">${v==="agents"?"Agents":"Documents"}</button>`).join("");
-  $("#tabs").innerHTML=[...viewTabs(cur),"projects","connect","settings"].map(t=>`${t==="projects"?`<span class="spacer"></span>`:""}<a href="#${t}" data-tab="${t}">${esc(TAB_INFO[t][0])}${NEW_TABS.includes(t)?`<span class="chip new">New</span>`:""}${t==="alerts"?`<span class="badge" id="alert-badge"${S.alertCount?"":" hidden"}>${S.alertCount||""}</span>`:""}</a>`).join("");
+  const tabs=allActiveTabs(),sw=$("#viewswitch");
+  if(sw)sw.style.display="none";
+  $("#tabs").innerHTML=[...tabs,"projects","connect","settings"].map(t=>`${t==="projects"?`<span class="spacer"></span>`:""}<a href="#${t}" data-tab="${t}">${esc(TAB_INFO[t]?.[0]||t)}${NEW_TABS.includes(t)?`<span class="chip new">New</span>`:""}${t==="alerts"?`<span class="badge" id="alert-badge"${S.alertCount?"":" hidden"}>${S.alertCount||""}</span>`:""}</a>`).join("");
   markTab();
 }
-$("#viewswitch").onclick=e=>{const b=e.target.closest("[data-v]");if(!b)return;
-  store.set("assay-view",b.dataset.v);buildNav();location.hash=viewTabs(b.dataset.v)[0]};
 function renderSettings(){
   const box=$("#tab-settings"),V=S.views;
   if(!V){box.innerHTML=`<div class="empty">Pick a source first.</div>`;return}
   const c=viewsConfig(),cat=V.catalog;
   const where=V.read_only?`<span class="chip warn">this browser</span><span>${esc(V.read_only)}</span>`
     :`<span class="chip good">everyone</span><span>Changes here apply to everyone who opens <b class="mono">${esc(src())}</b>.</span>`;
-  const block=name=>{const on=viewOn(name),v=cat.views[name];
-    return `<div class="panel stack" data-block="${name}">
-      <label class="viewhead"><input type="checkbox" data-viewon="${name}"${on?" checked":""}><span><h2>${esc(v.label)} view</h2>
-        <span class="sub">${esc(VIEW_INFO[name])}${name==="documents"&&!hasDocs()?" This source has no document data yet.":""}</span></span></label>
-      <div class="stack" data-more${on?"":" hidden"}>
-        <div class="toggles">${v.tabs.map(t=>`<label><input type="checkbox" data-tabon="${name}:${t}"${c.views[name].tabs.includes(t)?" checked":""}><span>${esc(TAB_INFO[t][0])}<small>${esc(TAB_INFO[t][1])}</small></span></label>`).join("")}</div>
-        ${name==="documents"?`<h3>Measures to show</h3><div class="toggles">${cat.measure_groups.map(g=>`<label><input type="checkbox" data-group="${esc(g)}"${c.measure_groups.includes(g)?" checked":""}><span>${esc(g)}</span></label>`).join("")}</div>`:""}
-      </div></div>`};
-  box.innerHTML=`<div class="panel stack"><div><h2>Settings</h2><p class="sub">Each view starts with its core tabs. Turn on more as you need them.</p></div><div class="flag">${where}</div></div>
-    ${block("agents")}${block("documents")}
-    <div class="row"><button class="primary" type="button" id="views-save">Save</button> <button type="button" id="views-reset">Back to defaults</button> <span class="note" id="views-msg" role="status"></span></div>`;
-  box.querySelectorAll("[data-viewon]").forEach(i=>i.onchange=()=>{i.closest("[data-block]").querySelector("[data-more]").hidden=!i.checked});
-  const msg=t=>$("#views-msg").textContent=t;
-  $("#views-save").onclick=async()=>{
-    const cfg={views:{},measure_groups:[...box.querySelectorAll("[data-group]:checked")].map(i=>i.dataset.group)};
-    ["agents","documents"].forEach(n=>cfg.views[n]={enabled:box.querySelector(`[data-viewon="${n}"]`).checked,
-      tabs:[...box.querySelectorAll(`[data-tabon^="${n}:"]:checked`)].map(i=>i.dataset.tabon.split(":")[1])});
-    try{
-      if(!cfg.views.agents.enabled&&!cfg.views.documents.enabled)throw new Error("Keep at least one view on.");
-      for(const n of ["agents","documents"])if(cfg.views[n].enabled&&!cfg.views[n].tabs.length)throw new Error(`Turn on at least one tab of the ${cat.views[n].label} view, or turn the view off.`);
-      if(V.read_only){store.set(viewsKey(),JSON.stringify(cfg));msg("Saved in this browser.")}
-      else{S.views={...V,...await api("/v1/views",{method:"PUT",body:JSON.stringify({source:src(),config:cfg})})};msg("Saved for everyone.")}
-      buildNav();
-    }catch(e){msg(e.message)}
+
+  const activeTabs=new Set(allActiveTabs());
+  const activeGroups=new Set(c?.measure_groups||cat?.measure_groups||[]);
+
+  const AGENT_TABS=["overview","diff","failures","agents","gates","prompts","learn","review","alerts"];
+  const DOC_TABS=["summary","workflow","measures","cost","errors","trace"];
+
+  const renderCard=t=>{
+    const on=activeTabs.has(t);
+    const info=TAB_INFO[t]||[t,""];
+    const isNew=NEW_TABS.includes(t);
+    return `<label class="tab-card${on?" active":""}" data-tab-card="${t}">
+      <input type="checkbox" data-tab="${t}"${on?" checked":""}>
+      <div>
+        <b>${esc(info[0])}${isNew?`<span class="chip new">New</span>`:""}</b>
+        <small>${esc(info[1])}</small>
+      </div>
+    </label>`;
   };
+
+  const renderGroup=g=>{
+    const on=activeGroups.has(g);
+    return `<label class="group-pill${on?" active":""}">
+      <input type="checkbox" data-group="${esc(g)}"${on?" checked":""}>
+      <span>${esc(g)}</span>
+    </label>`;
+  };
+
+  box.innerHTML=`<div class="panel stack">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
+      <div>
+        <h2>Dashboard Settings</h2>
+        <p class="sub">Choose which tabs and measures appear on your dashboard. Single, unified navigation without nested menus.</p>
+      </div>
+      <div class="flag">${where}</div>
+    </div>
+    <div class="settings-presets">
+      <span style="font-size:12.5px;color:var(--muted);font-weight:500">Presets:</span>
+      <button type="button" class="preset-btn" data-preset="all">✨ All Features</button>
+      <button type="button" class="preset-btn" data-preset="agents">🤖 Agent Testing</button>
+      <button type="button" class="preset-btn" data-preset="pipeline">📊 Pipeline & Quality</button>
+      <button type="button" class="preset-btn" data-preset="default">🎯 Defaults</button>
+    </div>
+  </div>
+
+  <div class="settings-section">
+    <div class="settings-section-head">
+      <div>
+        <h3>🤖 AI & Agent Testing</h3>
+        <p class="sub">Trajectories, behavior diffs, failure clusters, release gates, and prompt iterations.</p>
+      </div>
+    </div>
+    <div class="settings-grid">
+      ${AGENT_TABS.map(renderCard).join("")}
+    </div>
+  </div>
+
+  <div class="settings-section">
+    <div class="settings-section-head">
+      <div>
+        <h3>📊 Pipeline Observability & Tracing</h3>
+        <p class="sub">Execution pipeline graphs, SLO measures, cost breakdowns, and document traces.</p>
+      </div>
+    </div>
+    <div class="settings-grid">
+      ${DOC_TABS.map(renderCard).join("")}
+    </div>
+  </div>
+
+  <div class="settings-section">
+    <div class="settings-section-head">
+      <div>
+        <h3>📈 Measure Groups</h3>
+        <p class="sub">Quality and reliability metrics computed over evaluation runs.</p>
+      </div>
+    </div>
+    <div class="group-pills">
+      ${(cat?.measure_groups||[]).map(renderGroup).join("")}
+    </div>
+  </div>
+
+  <div class="row" style="display:flex;align-items:center;gap:12px;margin-top:6px">
+    <button class="primary" type="button" id="views-save" style="font-weight:600;padding:8px 20px">Save Settings</button>
+    <button type="button" id="views-reset" style="padding:8px 16px">Back to Defaults</button>
+    <span class="note" id="views-msg" role="status" style="font-weight:500"></span>
+  </div>`;
+
+  box.querySelectorAll("input[data-tab]").forEach(inp=>{
+    inp.onchange=()=>{inp.closest(".tab-card").classList.toggle("active",inp.checked)};
+  });
+  box.querySelectorAll("input[data-group]").forEach(inp=>{
+    inp.onchange=()=>{inp.closest(".group-pill").classList.toggle("active",inp.checked)};
+  });
+
+  const setTabs=(tabList)=>{
+    const set=new Set(tabList);
+    box.querySelectorAll("input[data-tab]").forEach(inp=>{
+      inp.checked=set.has(inp.dataset.tab);
+      inp.closest(".tab-card").classList.toggle("active",inp.checked);
+    });
+  };
+  box.querySelectorAll("[data-preset]").forEach(b=>{
+    b.onclick=()=>{
+      const p=b.dataset.preset;
+      if(p==="all")setTabs([...AGENT_TABS,...DOC_TABS]);
+      else if(p==="agents")setTabs(AGENT_TABS);
+      else if(p==="pipeline")setTabs(DOC_TABS);
+      else if(p==="default")setTabs([...(cat?.views?.agents?.core||[]),...(cat?.views?.documents?.core||[])]);
+    };
+  });
+
+  const msg=t=>$("#views-msg").textContent=t;
+
+  $("#views-save").onclick=async()=>{
+    const checkedTabs=new Set([...box.querySelectorAll("input[data-tab]:checked")].map(i=>i.dataset.tab));
+    const checkedGroups=[...box.querySelectorAll("input[data-group]:checked")].map(i=>i.dataset.group);
+
+    if(!checkedTabs.size){msg("⚠️ Please select at least one tab to show.");return}
+
+    const agTabs=(cat?.views?.agents?.tabs||AGENT_TABS).filter(t=>checkedTabs.has(t));
+    const docTabs=(cat?.views?.documents?.tabs||DOC_TABS).filter(t=>checkedTabs.has(t));
+
+    const cfg={
+      views:{
+        agents:{enabled:agTabs.length>0, tabs:agTabs.length?agTabs:(cat?.views?.agents?.core||[])},
+        documents:{enabled:docTabs.length>0, tabs:docTabs.length?docTabs:(cat?.views?.documents?.core||[])}
+      },
+      measure_groups:checkedGroups
+    };
+
+    try{
+      if(V.read_only){
+        store.set(viewsKey(),JSON.stringify(cfg));
+        msg("✓ Saved in this browser.");
+      }else{
+        S.views={...V,...await api("/v1/views",{method:"PUT",body:JSON.stringify({source:src(),config:cfg})})};
+        msg("✓ Saved for everyone.");
+      }
+      buildNav();
+    }catch(e){msg("Error: "+e.message)}
+  };
+
   $("#views-reset").onclick=async()=>{
     try{
-      if(V.read_only){try{localStorage.removeItem(viewsKey())}catch(e){}}
-      else S.views={...V,...await api(`/v1/views?${q({source:src()})}`,{method:"DELETE"})};
-      buildNav();renderSettings();msg("Back to the defaults.");
-    }catch(e){msg(e.message)}
+      if(V.read_only){
+        try{localStorage.removeItem(viewsKey())}catch(e){}
+      }else{
+        S.views={...V,...await api(`/v1/views?${q({source:src()})}`,{method:"DELETE"})};
+      }
+      buildNav();
+      renderSettings();
+      msg("✓ Restored default settings.");
+    }catch(e){msg("Error: "+e.message)}
   };
 }
 
@@ -2241,7 +2388,7 @@ async function renderGates(){
 /* ---------- routing ---------- */
 const TABS=["overview","summary","workflow","measures","cost","errors","failures","diff","agents","learn","review","prompts","trace","alerts","gates","projects","connect","settings"];
 // Hash is "#<tab>" or "#measures/<measure_id>" (the link alert notifications use).
-function tab(){const h=location.hash.slice(1).split("/")[0];return TABS.includes(h)?h:viewTabs(currentView())[0]}
+function tab(){const h=location.hash.slice(1).split("/")[0];const active=allActiveTabs();return (TABS.includes(h)&&(active.includes(h)||["projects","connect","settings"].includes(h)))?h:(active[0]||"overview")}
 function hashMeasure(){const p=location.hash.slice(1).split("/");return p[0]==="measures"&&p[1]?decodeURIComponent(p[1]):null}
 async function render(){
   const t=tab(),hm=hashMeasure();
@@ -2249,9 +2396,6 @@ async function render(){
   if(t==="measures"&&!hm)S.measure=null;
   const hp=location.hash.slice(1).split("/");if(t==="trace"&&hp[1]){S.trace.doc=decodeURIComponent(hp[1]);S.trace.step=hp[2]?decodeURIComponent(hp[2]):null}
   if(t==="workflow")S.wfStep=hp[1]?decodeURIComponent(hp[1]):null;
-  // A link to a tab of the other view (a trace from a diff, say) switches to that view.
-  const owner=enabledViews().find(v=>viewTabs(v).includes(t));
-  if(owner&&!viewTabs(currentView()).includes(t)){store.set("assay-view",owner);buildNav()}
   markTab();
   TABS.forEach(x=>$("#tab-"+x).hidden=x!==t);
   if(!S.overview&&!["overview","projects","gates","connect","settings","failures","diff","agents","learn","review","trace","workflow"].includes(t))return;  // these don't need a measure run
