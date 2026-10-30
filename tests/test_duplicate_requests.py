@@ -3,6 +3,8 @@ expect the second delivery to change nothing, still answer success to the sender
 and be recorded as a duplicate."""
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 import assay_sdk as assay
@@ -128,26 +130,28 @@ def test_duplicate_request_key_idempotency_fails():
     assert any("called again with order_id='O-555'" in f for f in res.failures)
 
 
-@pytest.mark.asyncio
-async def test_async_aduplicate():
-    processed = set()
+def test_async_aduplicate():
+    async def _test():
+        processed = set()
 
-    async def async_handler(req):
-        key = req["id"]
-        if key in processed:
-            return {"status": 200, "deduped": True}
-        cur = assay.current()
-        if cur:
-            cur.tool("execute_task", {"id": key})
-        processed.add(key)
-        return {"status": 200, "deduped": False}
+        async def async_handler(req):
+            key = req["id"]
+            if key in processed:
+                return {"status": 200, "deduped": True}
+            cur = assay.current()
+            if cur:
+                cur.tool("execute_task", {"id": key})
+            processed.add(key)
+            return {"status": 200, "deduped": False}
 
-    res = await aduplicate(async_handler, {"id": "task-42"})
-    assert res.ok
-    assert res.first == {"status": 200, "deduped": False}
-    assert res.second == {"status": 200, "deduped": True}
-    assert res.duplicate_run.duplicate is True
-    res.verify()
+        res = await aduplicate(async_handler, {"id": "task-42"})
+        assert res.ok
+        assert res.first == {"status": 200, "deduped": False}
+        assert res.second == {"status": 200, "deduped": True}
+        assert res.duplicate_run.duplicate is True
+        res.verify()
+
+    asyncio.run(_test())
 
 
 def test_sync_duplicate_rejects_coroutine_function():

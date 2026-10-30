@@ -33,7 +33,7 @@ dependencies = [
 postgres = ["psycopg[binary]>=3.1"]
 judge = ["anthropic"]  # the LLM judge (assay/judge.py): plan quality and consistency
 sso = ["pyjwt[crypto]>=2.8"]  # single sign-on (assay/sso.py): verifying the provider's ID tokens
-dev = ["pytest>=8", "httpx>=0.27"]
+dev = ["pytest>=8", "httpx>=0.27", "pytest-asyncio>=0.23"]
 
 [project.urls]
 Homepage = "https://github.com/tap222/assay-evals"
